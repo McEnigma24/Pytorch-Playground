@@ -36,6 +36,12 @@ from log_print import log_print, tensorboard_run_dir
 # Gradient Clipping
 
 
+# global_network="1 layer"
+# global_network="Simple MLP, skip connections"
+global_network="LSTM"
+
+            # case "LSTM":
+            #     print("a")
 
 def resolve_device(device: torch.device | str | None = None) -> torch.device:
     if device is not None:
@@ -68,72 +74,75 @@ class SimpleNet(nn.Module):
         # Network Params #
         self.cost_function = nn.CrossEntropyLoss()   # można argmax, bez softMaxu -> to zmienia tylko skalę a nie to która odpowiedź jest najlepsza
 
-        # 1 layer #
-        if False:
-            self.bn1 = nn.BatchNorm1d(input_size)
-            self.layer1 = nn.Linear(input_size, output_size)
-            # self.dropout1 = nn.Dropout(p=0.3)    # nie na końcu bo wtedy dropujemy wiadomość wychodzącą xd
+        match global_network:
 
-        # MLP - simple #
-        if False:
-            # layer sizes #
-            self.network_input_size = input_size
-            self.network_output_size = output_size
-            self.hidden_size = 100
-            # self.hidden_size = 250
-            self.stem_output_size = 100
-            self.head_input_size = 100
+            case "1 layer":
+                self.bn1 = nn.BatchNorm1d(input_size)
+                self.layer1 = nn.Linear(input_size, output_size)
+                # self.dropout1 = nn.Dropout(p=0.3)    # nie na końcu bo wtedy dropujemy wiadomość wychodzącą xd
+
+            case "Simple MLP, skip connections":
+                # layer sizes #
+                self.network_input_size = input_size
+                self.network_output_size = output_size
+                self.hidden_size = 100
+                # self.hidden_size = 250
+                self.stem_output_size = 100
+                self.head_input_size = 100
 
 
-            # STEM #
-            self.stem_layer = nn.Linear(self.network_input_size, self.stem_output_size)
-            self.stem_batchNorm = nn.BatchNorm1d(self.stem_output_size)
-            self.stem_dropout = nn.Dropout(p=0.3)
+                # STEM #
+                self.stem_layer = nn.Linear(self.network_input_size, self.stem_output_size)
+                self.stem_batchNorm = nn.BatchNorm1d(self.stem_output_size)
+                self.stem_dropout = nn.Dropout(p=0.3)
 
-            self.net = nn.Sequential(
-                nn.Linear(self.stem_output_size, self.hidden_size),
-                nn.BatchNorm1d(self.hidden_size),
-                nn.ReLU(),
-                nn.Dropout(0.3),
+                self.net = nn.Sequential(
+                    nn.Linear(self.stem_output_size, self.hidden_size),
+                    nn.BatchNorm1d(self.hidden_size),
+                    nn.ReLU(),
+                    nn.Dropout(0.3),
 
-                nn.Linear(self.hidden_size, self.hidden_size),
-                nn.BatchNorm1d(self.hidden_size),
-                nn.ReLU(),
-                nn.Dropout(0.3),
+                    nn.Linear(self.hidden_size, self.hidden_size),
+                    nn.BatchNorm1d(self.hidden_size),
+                    nn.ReLU(),
+                    nn.Dropout(0.3),
 
-                nn.Linear(self.hidden_size, self.head_input_size),
-                nn.BatchNorm1d(self.head_input_size),
-                nn.ReLU(),
-                nn.Dropout(0.3),
+                    nn.Linear(self.hidden_size, self.head_input_size),
+                    nn.BatchNorm1d(self.head_input_size),
+                    nn.ReLU(),
+                    nn.Dropout(0.3),
 
-            )
+                )
 
-            self.head_layer = nn.Linear(self.head_input_size, self.network_output_size)
+                self.head_layer = nn.Linear(self.head_input_size, self.network_output_size)
 
-            # BatchNorm się raczej tutaj nie robi, Dropout ucinało by nam ostateczne klasy, czyli moglimyśmy nie móc wybrać poprawnej opcji #
-            # self.head_batchNorm = nn.BatchNorm1d(self.network_output_size)
-            # self.head_dropout = nn.Dropout(p=0.3)
+                # BatchNorm się raczej tutaj nie robi, Dropout ucinało by nam ostateczne klasy, czyli moglimyśmy nie móc wybrać poprawnej opcji #
+                # self.head_batchNorm = nn.BatchNorm1d(self.network_output_size)
+                # self.head_dropout = nn.Dropout(p=0.3)
 
-        # RNN #
-        if True:
-            
+            case "LSTM":
+                print("a")
+
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
-        # 1 layer #
-        if False:
-            x = self.bn1(x)
-            x = self.layer1(x)
-            x = self.dropout1(x)
+        match global_network:
 
-        # MLP - simple #
-        if True:
-            x = self.stem_layer(x)
+            case "1 layer":
+                x = self.bn1(x)
+                x = self.layer1(x)
+                x = self.dropout1(x)
 
-            for i in range(5):
-                x = x + self.net(x)
+            case "Simple MLP, skip connections":
+                x = self.stem_layer(x)
 
-            x = self.head_layer(x)
+                for i in range(5):
+                    x = x + self.net(x)
+
+                x = self.head_layer(x)
+
+            case "LSTM":
+                print("a")
 
         return x
 
@@ -268,10 +277,6 @@ class SimpleNet(nn.Module):
             writer.add_scalar("eval/loss", avg_loss, epoch)
             writer.add_scalar("eval/accuracy", accuracy, epoch)
         return avg_loss, accuracy
-
-
-
-
 
 
 
