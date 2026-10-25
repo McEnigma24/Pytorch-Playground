@@ -71,8 +71,8 @@ class SimpleNet(nn.Module):
         # layer sizes #
         self.network_input_size = input_size
         self.network_output_size = output_size
-        # self.hidden_size = 100
-        self.hidden_size = 250
+        self.hidden_size = 100
+        # self.hidden_size = 250
         self.stem_output_size = 100
         self.head_input_size = 100
 
