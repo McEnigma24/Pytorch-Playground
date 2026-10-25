@@ -66,15 +66,7 @@ class SimpleNet(nn.Module):
 
     def init_network(self, input_size: int, output_size: int,):
         # Network Params #
-        self.cost_function = nn.CrossEntropyLoss()   # można argmax, bez softMaxu -> to zmienia tylko skalę a nie kolejność
-
-        # layer sizes #
-        self.network_input_size = input_size
-        self.network_output_size = output_size
-        self.hidden_size = 100
-        # self.hidden_size = 250
-        self.stem_output_size = 100
-        self.head_input_size = 100
+        self.cost_function = nn.CrossEntropyLoss()   # można argmax, bez softMaxu -> to zmienia tylko skalę a nie to która odpowiedź jest najlepsza
 
         # 1 layer #
         if False:
@@ -83,7 +75,16 @@ class SimpleNet(nn.Module):
             # self.dropout1 = nn.Dropout(p=0.3)    # nie na końcu bo wtedy dropujemy wiadomość wychodzącą xd
 
         # MLP - simple #
-        if True:
+        if False:
+            # layer sizes #
+            self.network_input_size = input_size
+            self.network_output_size = output_size
+            self.hidden_size = 100
+            # self.hidden_size = 250
+            self.stem_output_size = 100
+            self.head_input_size = 100
+
+
             # STEM #
             self.stem_layer = nn.Linear(self.network_input_size, self.stem_output_size)
             self.stem_batchNorm = nn.BatchNorm1d(self.stem_output_size)
@@ -113,7 +114,9 @@ class SimpleNet(nn.Module):
             # self.head_batchNorm = nn.BatchNorm1d(self.network_output_size)
             # self.head_dropout = nn.Dropout(p=0.3)
 
-
+        # RNN #
+        if True:
+            
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
