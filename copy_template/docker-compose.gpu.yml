@@ -1,0 +1,5 @@
+# Overlay CUDA — używany gdy GPU jest dostępne (nvidia-container-toolkit).
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml run …
+services:
+  dev:
+    gpus: all

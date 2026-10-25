@@ -1,0 +1,44 @@
+# Dev-container: mount całego repo, GPU NVIDIA (overlay), venv w ./build/venv (uv)
+#
+#   docker compose --env-file _config_/config.env build
+#   ./scripts/drun sync
+#   ./shell.sh
+
+name: ${PROJECT_NAME}
+
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${PROJECT_NAME}:dev
+
+    volumes:
+      - .:/workspace
+
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      TZ: Europe/Warsaw
+      PROJECT_NAME: ${PROJECT_NAME}
+      PROJECT_DISPLAY_NAME: ${PROJECT_DISPLAY_NAME}
+      PYTHONPATH_EXTRA: ${PYTHONPATH_EXTRA:-}
+      UV_CACHE_DIR: /workspace/build/uv-cache
+      UV_PYTHON_INSTALL_DIR: /workspace/build/python
+      UV_PROJECT_ENVIRONMENT: /workspace/build/venv
+      UV_PYTHON_DOWNLOADS: automatic
+      JUPYTER_NOTEBOOK_DIR: ${JUPYTER_NOTEBOOK_DIR:-/workspace/notebooks}
+      TENSORBOARD_LOGDIR: ${TENSORBOARD_LOGDIR:-/workspace/runs}
+      JUPYTER_PORT: ${JUPYTER_PORT:-8888}
+      TENSORBOARD_PORT: ${TENSORBOARD_PORT:-6006}
+
+    ports:
+      - "${JUPYTER_PORT:-8888}:8888"
+      - "${TENSORBOARD_PORT:-6006}:6006"
+
+    entrypoint: ["/workspace/docker/entrypoint.sh"]
+    command: ["bash"]

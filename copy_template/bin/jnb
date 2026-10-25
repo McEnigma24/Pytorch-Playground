@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# shellcheck source=bin/_bg.sh
+source /workspace/bin/_bg.sh
+
+NAME=jupyter
+PIDFILE=/workspace/build/run/jupyter.pid
+LOGFILE=/workspace/build/logs/jupyter.log
+NOTEBOOK_DIR="${JUPYTER_NOTEBOOK_DIR:-/workspace/notebooks}"
+HOST_PORT="${JUPYTER_PORT:-8888}"
+URL="http://127.0.0.1:${HOST_PORT}/"
+
+_kernel_name="${PROJECT_NAME//_/-}"
+_kernel_display="${PROJECT_DISPLAY_NAME:-${PROJECT_NAME} (Docker)}"
+
+register_kernel_if_needed() {
+  local venv="${UV_PROJECT_ENVIRONMENT:-/workspace/build/venv}"
+  if [[ -x "${venv}/bin/python" ]]; then
+    "${venv}/bin/python" -m ipykernel install --sys-prefix \
+      --name "${_kernel_name}" \
+      --display-name "${_kernel_display}" 2>/dev/null || true
+  fi
+}
+
+cmd="${1:-start}"
+case "$cmd" in
+  start)
+    register_kernel_if_needed
+    bg_start "$NAME" "$PIDFILE" "$LOGFILE" \
+      jupyter lab \
+      --ip=0.0.0.0 \
+      --port=8888 \
+      --no-browser \
+      --allow-root \
+      --ServerApp.token='' \
+      --ServerApp.password='' \
+      --ServerApp.disable_check_xsrf=True \
+      --ServerApp.allow_origin='*' \
+      --notebook-dir="$NOTEBOOK_DIR"
+    echo "Jupyter Lab: ${URL}"
+    ;;
+  stop)
+    bg_stop "$NAME" "$PIDFILE"
+    ;;
+  status)
+    bg_status "$NAME" "$PIDFILE"
+    ;;
+  logs)
+    bg_logs "$LOGFILE"
+    ;;
+  *)
+    echo "Użycie: jnb [start|stop|status|logs]" >&2
+    exit 1
+    ;;
+esac
