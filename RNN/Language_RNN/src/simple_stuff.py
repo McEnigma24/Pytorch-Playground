@@ -124,6 +124,7 @@ class SimpleNet(nn.Module):
                 print("a")
 
 
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         match global_network:
