@@ -1,6 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ensure_host_user() {
+  local uid="${HOST_UID:-1000}"
+  local gid="${HOST_GID:-1000}"
+  local user="${HOST_USER:-dev}"
+
+  if ! getent group "${gid}" >/dev/null 2>&1; then
+    groupadd -o -g "${gid}" "${user}"
+  fi
+
+  if ! getent passwd "${user}" >/dev/null 2>&1; then
+    useradd -o -u "${uid}" -g "${gid}" -d "/home/${user}" -m -s /bin/bash "${user}"
+  fi
+}
+
+if [[ "$(id -u)" -eq 0 && -n "${HOST_UID:-}" ]]; then
+  ensure_host_user
+  exec gosu "${HOST_USER:-dev}" "$0" "$@"
+fi
+
 cd /workspace
 
 VENV="${UV_PROJECT_ENVIRONMENT:-/workspace/build/venv}"
@@ -9,7 +28,7 @@ mkdir -p /workspace/build/uv-cache /workspace/build/python /workspace/build/run 
 export UV_PROJECT_ENVIRONMENT="${VENV}"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-/workspace/build/uv-cache}"
 export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-/workspace/build/python}"
-export PATH="/workspace/bin:${VENV}/bin:/root/.local/bin:${PATH}"
+export PATH="/workspace/bin:${VENV}/bin:/usr/local/bin:${PATH}"
 
 _kernel_name="${KERNEL_NAME:-}"
 if [[ -z "${_kernel_name}" ]]; then

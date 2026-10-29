@@ -56,6 +56,7 @@ RUN apt-get update -y \
     vim \
     less \
     htop \
+    gosu \
  && ln -snf /usr/share/zoneinfo/Europe/Warsaw /etc/localtime \
  && echo "Europe/Warsaw" > /etc/timezone \
  && rm -rf /var/lib/apt/lists/*

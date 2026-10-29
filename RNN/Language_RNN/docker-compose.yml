@@ -21,6 +21,9 @@ services:
     tty: true
 
     environment:
+      HOST_UID: ${HOST_UID}
+      HOST_GID: ${HOST_GID}
+      HOST_USER: ${HOST_USER}
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       TZ: Europe/Warsaw

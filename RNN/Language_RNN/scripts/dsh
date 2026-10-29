@@ -8,8 +8,8 @@ cd "$ROOT"
 source "${ROOT}/scripts/_compose_env.sh"
 
 if docker ps --format '{{.Names}}' | grep -qx "${SHELL_CONTAINER_NAME}"; then
-  docker exec "${SHELL_CONTAINER_NAME}" bash -lc 'cd /workspace && uv sync'
-  exec docker exec -it "${SHELL_CONTAINER_NAME}" bash --rcfile /workspace/docker/shell_init.sh
+  docker exec -u "${HOST_USER}" "${SHELL_CONTAINER_NAME}" bash -lc 'cd /workspace && uv sync'
+  exec docker exec -it -u "${HOST_USER}" "${SHELL_CONTAINER_NAME}" bash --rcfile /workspace/docker/shell_init.sh
 fi
 
 exec "${COMPOSE[@]}" run --rm --service-ports --name "${SHELL_CONTAINER_NAME}" dev bash

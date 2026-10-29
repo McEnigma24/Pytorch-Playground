@@ -10,6 +10,9 @@ fi
 source "${ROOT}/_config_/load_config.sh"
 
 ENV_FILE="${ROOT}/_config_/config.env"
+export HOST_UID="${HOST_UID:-$(id -u)}"
+export HOST_GID="${HOST_GID:-$(id -g)}"
+export HOST_USER="${HOST_USER:-$(id -un)}"
 COMPOSE=(docker compose --env-file "${ENV_FILE}" -f "${ROOT}/docker-compose.yml")
 GPU_OK=0
 
