@@ -22,9 +22,7 @@ def resolve_data_dir() -> Path:
         return Path(env)
 
     project_root = Path(__file__).resolve().parents[2]
-    cache_root = Path(
-        os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
-    )
+    cache_root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
     candidates = [
         Path("/workspace/data/language"),
         project_root / "data" / "language",
@@ -40,9 +38,7 @@ def resolve_data_dir() -> Path:
             return path
         except OSError:
             continue
-    raise RuntimeError(
-        "Brak zapisywalnego katalogu na korpus (ustaw LANGUAGE_RNN_DATA_DIR)"
-    )
+    raise RuntimeError("Brak zapisywalnego katalogu na korpus (ustaw LANGUAGE_RNN_DATA_DIR)")
 
 
 def ensure_pan_tadeusz(data_dir: Path | None = None) -> Path:
@@ -53,10 +49,7 @@ def ensure_pan_tadeusz(data_dir: Path | None = None) -> Path:
         return path
 
     log_print(f"Pobieram korpus: {PAN_TADEUSZ_URL}")
-    req = urllib.request.Request(
-        PAN_TADEUSZ_URL,
-        headers={"User-Agent": "Language_RNN-playground/0.1"},
-    )
+    req = urllib.request.Request(PAN_TADEUSZ_URL, headers={"User-Agent": "Language_RNN-playground/0.1"})
     with urllib.request.urlopen(req, timeout=120) as resp:
         raw = resp.read()
     text = raw.decode("utf-8")
@@ -103,10 +96,7 @@ class CharSeqDataset(Dataset):
         return x, y
 
 
-def split_encoded(
-    encoded: torch.Tensor,
-    train_frac: float = 0.9,
-) -> tuple[torch.Tensor, torch.Tensor]:
+def split_encoded(encoded: torch.Tensor, train_frac: float = 0.9) -> tuple[torch.Tensor, torch.Tensor]:
     n = len(encoded)
     split = int(n * train_frac)
     return encoded[:split].clone(), encoded[split:].clone()

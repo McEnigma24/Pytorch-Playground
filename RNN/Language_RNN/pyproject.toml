@@ -26,7 +26,6 @@ experiments = [
     "seaborn>=0.13.0",
 ]
 dev = [
-    "ruff>=0.9.0",
     "pytest>=8.0.0",
 ]
 
@@ -42,6 +41,3 @@ explicit = true
 torch = { index = "pytorch-cu129" }
 torchvision = { index = "pytorch-cu129" }
 
-[tool.ruff]
-line-length = 100
-target-version = "py312"

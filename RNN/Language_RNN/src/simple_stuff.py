@@ -38,18 +38,19 @@ from log_print import log_print, tensorboard_run_dir
 
 # global_network="1 layer"
 # global_network="Simple MLP, skip connections"
-global_network="LSTM"
+global_network = "LSTM"
 
-            # case "LSTM":
-            #     print("a")
+# case "LSTM":
+#     print("a")
+
 
 def resolve_device(device: torch.device | str | None = None) -> torch.device:
     if device is not None:
         return torch.device(device)
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-class SimpleNet(nn.Module):
 
+class SimpleNet(nn.Module):
     def __init__(
         self,
         input_size: int,
@@ -70,16 +71,23 @@ class SimpleNet(nn.Module):
         # Compute ENV - had to be at the end #
         self.to(self.device)
 
-    def init_network(self, input_size: int, output_size: int,):
+    def init_network(
+        self,
+        input_size: int,
+        output_size: int,
+    ):
         # Network Params #
-        self.cost_function = nn.CrossEntropyLoss()   # można argmax, bez softMaxu -> to zmienia tylko skalę a nie to która odpowiedź jest najlepsza
+        # aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        # można argmax, bez softMaxu -> to zmienia tylko skalę a nie to która
+        # odpowiedź jest najlepsza
+        self.cost_function = nn.CrossEntropyLoss()
 
         match global_network:
-
             case "1 layer":
                 self.bn1 = nn.BatchNorm1d(input_size)
                 self.layer1 = nn.Linear(input_size, output_size)
-                # self.dropout1 = nn.Dropout(p=0.3)    # nie na końcu bo wtedy dropujemy wiadomość wychodzącą xd
+                # self.dropout1 = nn.Dropout(p=0.3)    # nie na końcu bo wtedy dropujemy
+                # wiadomość wychodzącą xd
 
             case "Simple MLP, skip connections":
                 # layer sizes #
@@ -89,7 +97,6 @@ class SimpleNet(nn.Module):
                 # self.hidden_size = 250
                 self.stem_output_size = 100
                 self.head_input_size = 100
-
 
                 # STEM #
                 self.stem_layer = nn.Linear(self.network_input_size, self.stem_output_size)
@@ -101,34 +108,29 @@ class SimpleNet(nn.Module):
                     nn.BatchNorm1d(self.hidden_size),
                     nn.ReLU(),
                     nn.Dropout(0.3),
-
                     nn.Linear(self.hidden_size, self.hidden_size),
                     nn.BatchNorm1d(self.hidden_size),
                     nn.ReLU(),
                     nn.Dropout(0.3),
-
                     nn.Linear(self.hidden_size, self.head_input_size),
                     nn.BatchNorm1d(self.head_input_size),
                     nn.ReLU(),
                     nn.Dropout(0.3),
-
                 )
 
                 self.head_layer = nn.Linear(self.head_input_size, self.network_output_size)
 
-                # BatchNorm się raczej tutaj nie robi, Dropout ucinało by nam ostateczne klasy, czyli moglimyśmy nie móc wybrać poprawnej opcji #
+                # BatchNorm się raczej tutaj nie robi, Dropout ucinało by nam ostateczne
+                # klasy, czyli moglimyśmy nie móc wybrać poprawnej opcji #
                 # self.head_batchNorm = nn.BatchNorm1d(self.network_output_size)
                 # self.head_dropout = nn.Dropout(p=0.3)
 
             case "LSTM":
                 print("a")
 
-
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         match global_network:
-
             case "1 layer":
                 x = self.bn1(x)
                 x = self.layer1(x)
@@ -147,16 +149,24 @@ class SimpleNet(nn.Module):
 
         return x
 
-
-
     def dataset_prep(self) -> None:
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            # transforms.Normalize((0.1307,), (0.3081,)),  # średnia/std na train MNIST
-        ])
+        transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                # transforms.Normalize((0.1307,), (0.3081,)),  # średnia/std na train MNIST
+            ]
+        )
 
-        self.train_ds = datasets.MNIST("/workspace/data/mnist", train=True, download=True, transform=transform)
-        self.test_ds = datasets.MNIST("/workspace/data/mnist", train=False, download=True, transform=transform)
+        self.train_ds = datasets.MNIST(
+    "/workspace/data/mnist",
+    train=True,
+    download=True,
+     transform=transform)
+        self.test_ds = datasets.MNIST(
+    "/workspace/data/mnist",
+    train=False,
+    download=True,
+     transform=transform)
 
     def _data_loader(self, dataset, batch_size: int, shuffle: bool) -> DataLoader:
         # num_workers>0: osobne procesy składają batch w tle (główna pętla mniej czeka na I/O).
@@ -180,12 +190,14 @@ class SimpleNet(nn.Module):
         model.train(was_training)
 
     def _log_custom_scalars_layout(self, writer: SummaryWriter) -> None:
-        writer.add_custom_scalars({
-            "train_and_eval": {
-                "accuracy": ["Multiline", ["train/accuracy", "eval/accuracy"]],
-                "loss": ["Multiline", ["train/loss", "eval/loss"]],
-            },
-        })
+        writer.add_custom_scalars(
+            {
+                "train_and_eval": {
+                    "accuracy": ["Multiline", ["train/accuracy", "eval/accuracy"]],
+                    "loss": ["Multiline", ["train/loss", "eval/loss"]],
+                },
+            }
+        )
 
     def trainn(
         self,
@@ -210,9 +222,9 @@ class SimpleNet(nn.Module):
                 y = y.to(self.device, non_blocking=True)
 
                 optimizer.zero_grad()
-                logits = model(x)                  # (B, 784) → (B, 10)
-                loss = self.cost_function(logits, y)    # (B, 10)
-                loss.backward()                         # matrixes of corrections (gradients for each weight)
+                logits = model(x)  # (B, 784) → (B, 10)
+                loss = self.cost_function(logits, y)  # (B, 10)
+                loss.backward()  # matrixes of corrections (gradients for each weight)
                 optimizer.step()
 
                 batch_n = y.size(0)
@@ -223,17 +235,13 @@ class SimpleNet(nn.Module):
             avg_loss = (running_loss / total).item()
             correct_n = correct.item()
             accuracy = correct_n / total
-            log_print(
-                f"Epoka {epoch + 1}: loss={avg_loss:.4f} "
-                f"train_accuracy={accuracy:.2%}"
-            )
+            log_print(f"Epoka {epoch + 1}: loss={avg_loss:.4f} train_accuracy={accuracy:.2%}")
             if writer is not None:
                 step = epoch + 1
                 writer.add_scalar("train/loss", avg_loss, step)
                 writer.add_scalar("train/accuracy", accuracy, step)
             if epoch % 10 == 0 and epoch != 0:
                 self.evall(model, writer=writer, epoch=epoch + 1)
-
 
     def evall(
         self,
@@ -270,15 +278,11 @@ class SimpleNet(nn.Module):
             avg_loss = 0.0
             correct_n = 0
             accuracy = 0.0
-        log_print(
-            f"Test: loss={avg_loss:.4f}, "
-            f"eval_accuracy={accuracy:.2%} ({correct_n}/{total})"
-        )
+        log_print(f"Test: loss={avg_loss:.4f}, eval_accuracy={accuracy:.2%} ({correct_n}/{total})")
         if writer is not None and epoch is not None:
             writer.add_scalar("eval/loss", avg_loss, epoch)
             writer.add_scalar("eval/accuracy", accuracy, epoch)
         return avg_loss, accuracy
-
 
 
 def main(tensorboard_dir: str | None = None) -> None:

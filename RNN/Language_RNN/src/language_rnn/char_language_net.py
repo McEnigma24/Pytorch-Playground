@@ -64,11 +64,7 @@ class CharLanguageNet(nn.Module):
             num_layers=self.num_layers,
         )
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        hidden: tuple[torch.Tensor, torch.Tensor] | None = None,
-    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+    def forward(self, x: torch.Tensor, hidden: tuple[torch.Tensor,torch.Tensor] | None = None)      -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         return self.rnn(x, hidden)
 
     def dataset_prep(self) -> None:
@@ -83,31 +79,26 @@ class CharLanguageNet(nn.Module):
         self.train_ds = CharSeqDataset(train_enc, self.seq_len)
         self.val_ds = CharSeqDataset(val_enc, self.seq_len)
 
-        log_print(
-            f"Korpus: {len(text):,} znaków, vocab={self.vocab_size}, "
-            f"train_windows={len(self.train_ds):,}, val_windows={len(self.val_ds):,}"
-        )
+        log_print(f"Korpus: {len(text):,} znaków, vocab={self.vocab_size}, train_windows={len(self.train_ds):,}, val_windows={len(self.val_ds):,}")
 
     def _data_loader(self, dataset, batch_size: int, shuffle: bool) -> DataLoader:
         pin_memory = self.device.type == "cuda"
         num_workers = 2 if pin_memory else 0
-        kwargs: dict = {
-            "batch_size": batch_size,
-            "shuffle": shuffle,
-            "pin_memory": pin_memory,
-        }
+        kwargs: dict = {"batch_size": batch_size, "shuffle": shuffle, "pin_memory": pin_memory}
         if num_workers > 0:
             kwargs["num_workers"] = num_workers
             kwargs["persistent_workers"] = True
         return DataLoader(dataset, **kwargs)
 
     def _log_custom_scalars_layout(self, writer: SummaryWriter) -> None:
-        writer.add_custom_scalars({
-            "train_and_eval": {
-                "loss": ["Multiline", ["train/loss", "eval/loss"]],
-                "perplexity": ["Multiline", ["train/perplexity", "eval/perplexity"]],
-            },
-        })
+        writer.add_custom_scalars(
+            {
+                "train_and_eval": {
+                    "loss": ["Multiline", ["train/loss", "eval/loss"]],
+                    "perplexity": ["Multiline", ["train/perplexity", "eval/perplexity"]],
+                }
+            }
+        )
 
     def trainn(
         self,
@@ -145,10 +136,7 @@ class CharLanguageNet(nn.Module):
 
             avg_loss = (running_loss / total_targets).item()
             perplexity = math.exp(min(avg_loss, 20.0))
-            log_print(
-                f"Epoka {epoch + 1}: loss={avg_loss:.4f} "
-                f"train_perplexity={perplexity:.2f}"
-            )
+            log_print(f"Epoka {epoch + 1}: loss={avg_loss:.4f} train_perplexity={perplexity:.2f}")
             if writer is not None:
                 step = epoch + 1
                 writer.add_scalar("train/loss", avg_loss, step)
@@ -191,9 +179,7 @@ class CharLanguageNet(nn.Module):
             avg_loss = 0.0
             perplexity = 1.0
 
-        log_print(
-            f"Val: loss={avg_loss:.4f}, eval_perplexity={perplexity:.2f}"
-        )
+        log_print(f"Val: loss={avg_loss:.4f}, eval_perplexity={perplexity:.2f}")
         if writer is not None and epoch is not None:
             writer.add_scalar("eval/loss", avg_loss, epoch)
             writer.add_scalar("eval/perplexity", perplexity, epoch)

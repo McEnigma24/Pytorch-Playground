@@ -1,6 +1,7 @@
 """Domyślny punkt wejścia w kontenerze: run_main"""
 
 from __future__ import annotations
+
 import os
 import subprocess
 
@@ -10,6 +11,7 @@ from log_print import log_print, reset_log_timer, tensorboard_run_dir
 
 # experiment = "mnist"
 experiment = "char_rnn"
+
 
 def main() -> str:
     reset_log_timer()
@@ -27,6 +29,7 @@ def main() -> str:
     subprocess.run(["clear"], check=False)
     return run_dir
 
+
 if __name__ == "__main__":
     run_dir = main()
     if experiment == "mnist":
@@ -35,6 +38,3 @@ if __name__ == "__main__":
         lr.main(tensorboard_dir=run_dir)
     else:
         raise ValueError(f"Nieznany experiment: {experiment}")
-
-
-    

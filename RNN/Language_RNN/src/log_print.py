@@ -37,13 +37,7 @@ def reset_log_timer() -> None:
     _last_log_at = None
 
 
-def log_print(
-    *args: Any,
-    sep: str = " ",
-    end: str = "\n",
-    file: TextIO | None = None,
-    flush: bool = False,
-) -> None:
+def log_print(*args: Any, sep: str = " ", end: str = "\n", file: TextIO | None = None, flush: bool = False) -> None:
     global _last_log_at
     now = time.perf_counter()
 
