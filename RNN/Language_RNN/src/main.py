@@ -5,21 +5,23 @@ from __future__ import annotations
 import os
 import subprocess
 
-import rnn_lstm
-import simple_stuff
+import infer
+import old_stuff
+import train
 from log_print import log_print, reset_log_timer, tensorboard_run_dir
 
 # experiment = "mnist"
 
-# experiment = "rnn"
-experiment = "rnn_lstm"
-# experiment = "rnn_gru"
+# experiment = "rnnRNN"
+experiment = "rnnLSTM"
+# experiment = "rnnGRU"
 
 # experiment = "transformer_nanoGPT"
 
+# experiment = "infer_rnnLSTM"
+
 
 default_run = True
-
 
 
 def main() -> str:
@@ -38,6 +40,7 @@ def main() -> str:
     subprocess.run(["clear"], check=False)
     return run_dir
 
+
 if __name__ == "__main__":
     run_dir = main()
 
@@ -46,11 +49,12 @@ if __name__ == "__main__":
         match experiment:
 
             case "mnist":
-                simple_stuff.main(tensorboard_dir=run_dir)
+                old_stuff.main(tensorboard_dir=run_dir)
 
-            case "rnn_lstm":
-                rnn_lstm.main(tensorboard_dir=run_dir)
+            case "rnnLSTM" | "rnnGRU" | "rnnRNN":
+                train.main(tensorboard_dir=run_dir, architecture=experiment)
 
-
+            case "infer_rnnLSTM" | "infer_rnnGRU" | "infer_rnnRNN":
+                infer.main(architecture=experiment.removeprefix("infer_"))
 
     # Manual Stuff #

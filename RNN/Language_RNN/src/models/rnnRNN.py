@@ -1,4 +1,4 @@
-"""Model: embedding → stacked LSTM (residual + LayerNorm + dropout) → linear."""
+"""Model: embedding → stacked RNN (residual + LayerNorm + dropout) → linear."""
 
 from __future__ import annotations
 
@@ -6,10 +6,11 @@ import torch
 import torch.nn as nn
 
 
-class rnnLSTM(nn.Module):
+class rnnRNN(nn.Module):
 
+    @staticmethod
     def name() -> str:
-        return "rnnLSTM"
+        return "rnnRNN"
 
     def __init__(
         self,
@@ -32,7 +33,8 @@ class rnnLSTM(nn.Module):
         )
 
         self.layers = nn.ModuleList(
-            nn.LSTM(hidden_size, hidden_size, num_layers=1, batch_first=True) for _ in range(num_layers)
+            nn.RNN(hidden_size, hidden_size, num_layers=1, batch_first=True, nonlinearity="tanh")
+            for _ in range(num_layers)
         )
         self.layer_norms = nn.ModuleList(nn.LayerNorm(hidden_size) for _ in range(num_layers))
         self.dropouts = nn.ModuleList(nn.Dropout(dropout) for _ in range(num_layers))
@@ -42,34 +44,28 @@ class rnnLSTM(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        hidden: tuple[torch.Tensor, torch.Tensor] | None = None,
-    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        hidden: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         out = self.embed_dropout(self.embedding(x))
         out = self.input_proj(out)
 
         if hidden is None:
-            layer_states: list[tuple[torch.Tensor, torch.Tensor] | None] = [None] * self.num_layers
+            layer_states: list[torch.Tensor | None] = [None] * self.num_layers
         else:
-            h, c = hidden
-            layer_states = [(h[i : i + 1], c[i : i + 1]) for i in range(self.num_layers)]
+            layer_states = [hidden[i : i + 1] for i in range(self.num_layers)]
 
         new_h: list[torch.Tensor] = []
-        new_c: list[torch.Tensor] = []
-        for i, lstm in enumerate(self.layers):
+        for i, rnn in enumerate(self.layers):
             residual = out
-            out, state = lstm(out, layer_states[i])
+            out, state = rnn(out, layer_states[i])
             out = self.dropouts[i](out)
             out = self.layer_norms[i](out + residual)
-            new_h.append(state[0])
-            new_c.append(state[1])
+            new_h.append(state)
 
         h_out = torch.cat(new_h, dim=0)
-        c_out = torch.cat(new_c, dim=0)
         logits = self.fc(out.reshape(-1, self.hidden_size))
-        return logits, (h_out, c_out)
+        return logits, h_out
 
-    def init_hidden(self, batch_size: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def init_hidden(self, batch_size: int) -> torch.Tensor:
         weight = next(self.parameters()).data
-        h = weight.new(self.num_layers, batch_size, self.hidden_size).zero_()
-        c = weight.new(self.num_layers, batch_size, self.hidden_size).zero_()
-        return h, c
+        return weight.new(self.num_layers, batch_size, self.hidden_size).zero_()

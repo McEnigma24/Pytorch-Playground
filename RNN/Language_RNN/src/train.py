@@ -1,11 +1,10 @@
-"""Trening char-RNN — ten sam układ co SimpleNet w simple_stuff.py."""
+"""Trening language RNN — ten sam układ co SimpleNet w old_stuff.py."""
 
 from __future__ import annotations
 
 import copy
 import math
 import os
-import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -14,25 +13,19 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from rnn_lstm.char_rnn import CharRNN
-from rnn_lstm.text_data import (
-    CharSeqDataset,
-    encode_text,
-    load_bpe_tokenizer,
-    load_corpus_text,
-    resolve_corpus_path,
-    split_encoded,
-)
+from models.rnnGRU import rnnGRU
+from models.rnnLSTM import rnnLSTM
+from models.rnnRNN import rnnRNN
+from text_and_tokenizer import prepare_language_data, tokenizer_dir
 from log_print import log_print, tensorboard_run_dir
 
 
-
 def project_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return Path(__file__).resolve().parents[1]
 
 
-def resolve_save_dir(model_name: str = DEFAULT_MODEL_NAME, when: datetime | None = None) -> Path:
-    """Nowy katalog runu: saved_models/lstm-YYYY.MM.DD-HHMMSS (o ile nie podano SAVE_DIR)."""
+def resolve_save_dir(model_name: str, when: datetime | None = None) -> Path:
+    """Nowy katalog runu: saved_models/rnnLSTM-YYYY.MM.DD-HHMMSS (o ile nie podano SAVE_DIR)."""
     env = os.environ.get("LANGUAGE_RNN_SAVE_DIR")
     if env:
         root = Path(env)
@@ -60,24 +53,6 @@ def resolve_resume_checkpoint_path() -> Path | None:
     return path
 
 
-def bootstrap_tokenizer_for_resume(save_dir: Path, checkpoint_path: Path) -> None:
-    tok_dir = save_dir / "tokenizer"
-    if tok_dir.is_dir() and any(tok_dir.iterdir()):
-        return
-    src = checkpoint_run_dir(checkpoint_path) / "tokenizer"
-    if not src.is_dir():
-        log_print(f"Brak tokenizera przy checkpointcie ({src}) — używę korpusu/BPE")
-        return
-    tok_dir.mkdir(parents=True, exist_ok=True)
-    for item in src.iterdir():
-        dest = tok_dir / item.name
-        if item.is_dir():
-            shutil.copytree(item, dest, dirs_exist_ok=True)
-        else:
-            shutil.copy2(item, dest)
-    log_print(f"Tokenizer skopiowany: {src} → {tok_dir}")
-
-
 def load_checkpoint_payload(path: Path | str) -> dict:
     return torch.load(Path(path), map_location="cpu", weights_only=False)
 
@@ -88,9 +63,10 @@ def resolve_device(device: torch.device | str | None = None) -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-class CharLanguageNet(nn.Module):
+class LanguageModelNet(nn.Module):
     def __init__(
         self,
+        architecture: str,
         embed_dim: int = 128,
         hidden_size: int = 256,
         num_layers: int = 3,
@@ -101,12 +77,13 @@ class CharLanguageNet(nn.Module):
     ):
         super().__init__()
 
+        self.architecture = architecture
         self.seq_len = seq_len
         self.embed_dim = embed_dim
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.dropout = dropout
-        self.model_name = DEFAULT_MODEL_NAME
+        self.model_name = architecture
         self.save_dir = Path(save_dir) if save_dir is not None else None
 
         # Datasets #
@@ -122,47 +99,28 @@ class CharLanguageNet(nn.Module):
 
     def init_network(self) -> None:
         self.cost_function = nn.CrossEntropyLoss()
-        self.rnn = CharRNN(
-            vocab_size=self.vocab_size,
-            embed_dim=self.embed_dim,
-            hidden_size=self.hidden_size,
-            num_layers=self.num_layers,
-            dropout=self.dropout,
-        )
+        kwargs = {
+            "vocab_size": self.vocab_size,
+            "embed_dim": self.embed_dim,
+            "hidden_size": self.hidden_size,
+            "num_layers": self.num_layers,
+            "dropout": self.dropout,
+        }
+        match self.architecture:
+            case "rnnLSTM":
+                self.rnn = rnnLSTM(**kwargs)
+            case "rnnGRU":
+                self.rnn = rnnGRU(**kwargs)
+            case "rnnRNN":
+                self.rnn = rnnRNN(**kwargs)
+            case _:
+                raise ValueError(f"Nieznana architektura: {self.architecture!r}")
 
-    def forward(self, x: torch.Tensor, hidden: tuple[torch.Tensor,torch.Tensor] | None = None)      -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+    def forward(self, x: torch.Tensor, hidden=None):
         return self.rnn(x, hidden)
 
     def dataset_prep(self) -> None:
-        corpus_path = resolve_corpus_path()
-        text = load_corpus_text(corpus_path)
-
-        tok_dir = None
-        if self.save_dir is not None:
-            candidate = self.save_dir / "tokenizer"
-            if candidate.is_dir() and any(candidate.iterdir()):
-                tok_dir = candidate
-
-        if tok_dir is not None:
-            from transformers import PreTrainedTokenizerFast
-
-            self.tokenizer = PreTrainedTokenizerFast.from_pretrained(tok_dir)
-            log_print(f"Tokenizer z zapisu: {tok_dir}")
-        else:
-            self.tokenizer = load_bpe_tokenizer(corpus_path)
-
-        self.vocab_size = self.tokenizer.vocab_size
-
-        encoded = encode_text(text, self.tokenizer)
-        train_enc, val_enc = split_encoded(encoded, train_frac=0.9)
-
-        self.train_ds = CharSeqDataset(train_enc, self.seq_len)
-        self.val_ds = CharSeqDataset(val_enc, self.seq_len)
-
-        log_print(
-            f"Korpus: {corpus_path.name}, {len(text):,} znaków → {len(encoded):,} tokenów, "
-            f"vocab={self.vocab_size}, train_windows={len(self.train_ds):,}, val_windows={len(self.val_ds):,}"
-        )
+        self.train_ds, self.val_ds, self.tokenizer, self.vocab_size = prepare_language_data(self.seq_len)
 
     def _data_loader(self, dataset, batch_size: int, shuffle: bool) -> DataLoader:
         pin_memory = self.device.type == "cuda"
@@ -185,6 +143,7 @@ class CharLanguageNet(nn.Module):
 
     def _training_hparams(self) -> dict:
         return {
+            "architecture": self.architecture,
             "model_name": self.model_name,
             "embed_dim": self.embed_dim,
             "hidden_size": self.hidden_size,
@@ -192,6 +151,7 @@ class CharLanguageNet(nn.Module):
             "dropout": self.dropout,
             "seq_len": self.seq_len,
             "vocab_size": self.vocab_size,
+            "tokenizer_dir": str(tokenizer_dir()),
         }
 
     def _ensure_save_dir(self) -> Path:
@@ -200,17 +160,9 @@ class CharLanguageNet(nn.Module):
             log_print(f"Zapis modeli: {self.save_dir}")
         return self.save_dir
 
-    def _ensure_tokenizer_on_disk(self, root: Path) -> None:
-        tok_dir = root / "tokenizer"
-        if tok_dir.is_dir() and any(tok_dir.iterdir()):
-            return
-        tok_dir.mkdir(parents=True, exist_ok=True)
-        self.tokenizer.save_pretrained(tok_dir)
-        log_print(f"Tokenizer zapisany → {tok_dir}")
-
     def _checkpoint_payload(
         self,
-        model: CharLanguageNet,
+        model: LanguageModelNet,
         optimizer: torch.optim.Optimizer,
         epoch: int,
         eval_loss: float,
@@ -229,7 +181,7 @@ class CharLanguageNet(nn.Module):
 
     def save_model_bundle(
         self,
-        model: CharLanguageNet,
+        model: LanguageModelNet,
         optimizer: torch.optim.Optimizer,
         epoch: int,
         eval_loss: float,
@@ -241,20 +193,22 @@ class CharLanguageNet(nn.Module):
     ) -> Path:
         model.eval()
         root = self._ensure_save_dir()
-        self._ensure_tokenizer_on_disk(root)
         pt_path = root / f"{self.model_name}_{stem}.pt"
         torch.save(
             self._checkpoint_payload(model, optimizer, epoch, eval_loss, eval_perplexity, best_eval_loss),
             pt_path,
         )
-        if export_onnx:
+        do_onnx = export_onnx and self.architecture == "rnnLSTM"
+        if do_onnx:
             self.export_to_onnx(model, root / f"{self.model_name}_{stem}.onnx")
-        log_print(f"Zapis {stem}: {pt_path.name}" + (f", {self.model_name}_{stem}.onnx" if export_onnx else ""))
+        elif export_onnx:
+            log_print(f"ONNX pominięty dla {self.architecture}")
+        log_print(f"Zapis {stem}: {pt_path.name}" + (f", {self.model_name}_{stem}.onnx" if do_onnx else ""))
         return pt_path
 
     def save_checkpoint(
         self,
-        model: CharLanguageNet,
+        model: LanguageModelNet,
         optimizer: torch.optim.Optimizer,
         epoch: int,
         eval_loss: float,
@@ -262,7 +216,6 @@ class CharLanguageNet(nn.Module):
         best_eval_loss: float,
     ) -> Path:
         root = self._ensure_save_dir()
-        self._ensure_tokenizer_on_disk(root)
         path = root / "checkpoints" / f"epoch_{epoch:04d}.pt"
         torch.save(
             self._checkpoint_payload(model, optimizer, epoch, eval_loss, eval_perplexity, best_eval_loss),
@@ -273,7 +226,7 @@ class CharLanguageNet(nn.Module):
 
     def save_final(
         self,
-        model: CharLanguageNet,
+        model: LanguageModelNet,
         optimizer: torch.optim.Optimizer,
         epoch: int,
         eval_loss: float,
@@ -291,11 +244,11 @@ class CharLanguageNet(nn.Module):
             export_onnx=True,
         )
 
-    def export_to_onnx(self, model: CharLanguageNet, onnx_path: Path) -> None:
+    def export_to_onnx(self, model: LanguageModelNet, onnx_path: Path) -> None:
         """Jeden krok LSTM: token (B,1), h0, c0 → logity (B,V), h1, c1 (do inferencji)."""
 
         class RnnStep(nn.Module):
-            def __init__(self, core: CharRNN) -> None:
+            def __init__(self, core: rnnLSTM) -> None:
                 super().__init__()
                 self.core = core
 
@@ -333,9 +286,16 @@ class CharLanguageNet(nn.Module):
             },
         )
 
+    def _batch_hidden(self, batch_n: int):
+        match self.architecture:
+            case "rnnLSTM":
+                return self.rnn.init_hidden(batch_n)
+            case "rnnGRU" | "rnnRNN":
+                return self.rnn.init_hidden(batch_n)
+
     def trainn(
         self,
-        model: CharLanguageNet,
+        model: LanguageModelNet,
         epochs: int = 30,
         batch_size: int = 128,
         writer: SummaryWriter | None = None,
@@ -376,7 +336,7 @@ class CharLanguageNet(nn.Module):
                 y = y.to(self.device, non_blocking=True)
                 batch_n = x.size(0)
 
-                hidden = model.rnn.init_hidden(batch_n)
+                hidden = self._batch_hidden(batch_n)
                 optimizer.zero_grad()
                 logits, _hidden = model(x, hidden)
                 loss = self.cost_function(logits, y.reshape(-1))
@@ -421,7 +381,7 @@ class CharLanguageNet(nn.Module):
 
     def evall(
         self,
-        model: CharLanguageNet,
+        model: LanguageModelNet,
         batch_size: int = 128,
         writer: SummaryWriter | None = None,
         epoch: int | None = None,
@@ -437,7 +397,7 @@ class CharLanguageNet(nn.Module):
                 x = x.to(self.device, non_blocking=True)
                 y = y.to(self.device, non_blocking=True)
                 batch_n = x.size(0)
-                hidden = model.rnn.init_hidden(batch_n)
+                hidden = self._batch_hidden(batch_n)
                 logits, _ = model(x, hidden)
                 loss = self.cost_function(logits, y.reshape(-1))
                 n_targets = y.numel()
@@ -459,7 +419,7 @@ class CharLanguageNet(nn.Module):
 
     def generate(
         self,
-        model: CharLanguageNet,
+        model: LanguageModelNet,
         seed: str = "Litwo",
         length: int = 400,
         temperature: float = 1.0,
@@ -472,28 +432,47 @@ class CharLanguageNet(nn.Module):
             seed_ids = [tok.unk_token_id or 0]
 
         token_ids: list[int] = []
-        hidden = model.rnn.init_hidden(1)
 
         with torch.no_grad():
-            for idx in seed_ids:
-                x = torch.tensor([[idx]], device=self.device, dtype=torch.long)
-                logits, hidden = model(x, hidden)
-                token_ids.append(idx)
-
-            last_idx = seed_ids[-1]
-            for _ in range(length):
-                x = torch.tensor([[last_idx]], device=self.device, dtype=torch.long)
-                logits, hidden = model(x, hidden)
-                logits = logits.squeeze(0) / max(temperature, 1e-6)
-                probs = torch.softmax(logits, dim=-1)
-                last_idx = int(torch.multinomial(probs, num_samples=1).item())
-                token_ids.append(last_idx)
+            match self.architecture:
+                case "rnnLSTM":
+                    hidden = model.rnn.init_hidden(1)
+                    for idx in seed_ids:
+                        x = torch.tensor([[idx]], device=self.device, dtype=torch.long)
+                        logits, hidden = model(x, hidden)
+                        token_ids.append(idx)
+                    last_idx = seed_ids[-1]
+                    for _ in range(length):
+                        x = torch.tensor([[last_idx]], device=self.device, dtype=torch.long)
+                        logits, hidden = model(x, hidden)
+                        logits = logits.squeeze(0) / max(temperature, 1e-6)
+                        probs = torch.softmax(logits, dim=-1)
+                        last_idx = int(torch.multinomial(probs, num_samples=1).item())
+                        token_ids.append(last_idx)
+                case "rnnGRU" | "rnnRNN":
+                    hidden = model.rnn.init_hidden(1)
+                    for idx in seed_ids:
+                        x = torch.tensor([[idx]], device=self.device, dtype=torch.long)
+                        logits, hidden = model(x, hidden)
+                        token_ids.append(idx)
+                    last_idx = seed_ids[-1]
+                    for _ in range(length):
+                        x = torch.tensor([[last_idx]], device=self.device, dtype=torch.long)
+                        logits, hidden = model(x, hidden)
+                        logits = logits.squeeze(0) / max(temperature, 1e-6)
+                        probs = torch.softmax(logits, dim=-1)
+                        last_idx = int(torch.multinomial(probs, num_samples=1).item())
+                        token_ids.append(last_idx)
 
         return tok.decode(token_ids, skip_special_tokens=True)
 
 
-def _net_from_hparams(hp: dict, device: torch.device, save_dir: Path) -> CharLanguageNet:
-    net = CharLanguageNet(
+def _net_from_hparams(hp: dict, device: torch.device, save_dir: Path) -> LanguageModelNet:
+    architecture = hp.get("architecture") or hp.get("model_name")
+    if not architecture:
+        raise ValueError("checkpoint hparams bez architecture / model_name")
+    net = LanguageModelNet(
+        architecture=architecture,
         embed_dim=hp.get("embed_dim", 128),
         hidden_size=hp.get("hidden_size", 256),
         num_layers=hp.get("num_layers", 3),
@@ -502,7 +481,7 @@ def _net_from_hparams(hp: dict, device: torch.device, save_dir: Path) -> CharLan
         device=device,
         save_dir=save_dir,
     )
-    net.model_name = hp.get("model_name", DEFAULT_MODEL_NAME)
+    net.model_name = hp.get("model_name", architecture)
     net.save_dir = save_dir
     return net
 
@@ -512,14 +491,19 @@ def load_checkpoint(
     device: torch.device | str | None = None,
     *,
     save_dir: Path | str | None = None,
-) -> tuple[dict, CharLanguageNet]:
-    """Wczytuje checkpoint .pt — tokenizer z save_dir lub katalogu checkpointu."""
+) -> tuple[dict, LanguageModelNet]:
+    """Wczytuje checkpoint .pt — tokenizer z text_and_tokenizer/data/tokenizer."""
     path = Path(path)
     payload = load_checkpoint_payload(path)
     hp = payload["hparams"]
     dev = resolve_device(device)
     resolved_save = Path(save_dir) if save_dir is not None else checkpoint_run_dir(path)
     net = _net_from_hparams(hp, dev, resolved_save)
+    if net.vocab_size != hp.get("vocab_size", net.vocab_size):
+        raise RuntimeError(
+            f"vocab checkpoint ({hp.get('vocab_size')}) ≠ tokenizer ({net.vocab_size}) — "
+            f"retrening tokenizera w {tokenizer_dir()}"
+        )
     net.load_state_dict(payload["model_state_dict"])
     net.to(dev)
     return payload, net
@@ -529,25 +513,26 @@ def build_net_for_run(
     device: torch.device,
     save_dir: Path,
     checkpoint_path: Path | None,
-) -> tuple[CharLanguageNet, dict | None]:
+    architecture: str,
+) -> tuple[LanguageModelNet, dict | None]:
     if checkpoint_path is None:
-        net = CharLanguageNet(device=device, save_dir=save_dir)
+        net = LanguageModelNet(architecture=architecture, device=device, save_dir=save_dir)
         net.save_dir = save_dir
         return net, None
 
-    bootstrap_tokenizer_for_resume(save_dir, checkpoint_path)
     payload = load_checkpoint_payload(checkpoint_path)
     log_print(f"Wznawiam z checkpointu: {checkpoint_path} (epoka {payload['epoch']})")
     net = _net_from_hparams(payload["hparams"], device, save_dir)
     return net, payload
 
 
-def main(tensorboard_dir: str | None = None) -> None:
+def main(tensorboard_dir: str | None = None, *, architecture: str) -> None:
     if tensorboard_dir is None:
         log_root = os.environ.get("TENSORBOARD_LOGDIR", "/workspace/runs")
         tensorboard_dir = tensorboard_run_dir(log_root)
 
     device = resolve_device()
+    log_print(f"Architektura: {architecture}")
     log_print(f"Urządzenie treningu: {device}")
     log_print(f"TensorBoard run: {tensorboard_dir}")
 
@@ -557,14 +542,14 @@ def main(tensorboard_dir: str | None = None) -> None:
         raise ValueError(
             "Wznowienie wymaga katalogu zapisu: ./start <checkpoint.pt> <save_dir>"
         )
-    save_dir = Path(save_env) if save_env else resolve_save_dir(DEFAULT_MODEL_NAME)
+    save_dir = Path(save_env) if save_env else resolve_save_dir(architecture)
     save_dir.mkdir(parents=True, exist_ok=True)
     (save_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
     log_print(f"Katalog zapisu: {save_dir}")
     if ckpt_path:
         log_print(f"Checkpoint wejściowy: {ckpt_path}")
 
-    net, resume_payload = build_net_for_run(device, save_dir, ckpt_path)
+    net, resume_payload = build_net_for_run(device, save_dir, ckpt_path, architecture)
 
     writer = SummaryWriter(tensorboard_dir)
     net._log_custom_scalars_layout(writer)
@@ -573,7 +558,7 @@ def main(tensorboard_dir: str | None = None) -> None:
         optimizer, best_eval_loss = net.trainn(net, epochs=epochs, writer=writer, resume_payload=resume_payload)
         eval_loss, eval_ppl = net.evall(net, writer=writer, epoch=epochs)
         net.save_final(net, optimizer, epochs, eval_loss, eval_ppl, best_eval_loss)
-        log_print(f"Best eval loss w runie: {best_eval_loss:.4f} (pliki lstm_best_eval.*)")
+        log_print(f"Best eval loss w runie: {best_eval_loss:.4f} (pliki {architecture}_best_eval.*)")
         final = net.generate(net, seed="Litwo, Ojczyzno moja!", length=500, temperature=0.85)
         log_print("--- Ostateczna generacja (wagi final, nie best) ---")
         log_print(final)

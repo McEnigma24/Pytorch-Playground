@@ -1,132 +1,123 @@
-"""Korpus Pan Tadeusz, tokenizer BPE (Hugging Face) i Dataset sekwencji tokenów."""
+"""Korpus Pan Tadeusz, tokenizer BPE (Unicode + byte_fallback) i Dataset sekwencji tokenów."""
 
 from __future__ import annotations
 
 import os
-import urllib.request
+import shutil
 from pathlib import Path
 
 import torch
 from torch.utils.data import Dataset
-from tokenizers import Tokenizer, decoders
+from tokenizers import Tokenizer, decoders, normalizers
 from tokenizers.models import BPE
-from tokenizers.pre_tokenizers import ByteLevel
+from tokenizers.pre_tokenizers import Metaspace
 from tokenizers.trainers import BpeTrainer
 from transformers import PreTrainedTokenizerFast
 
 from log_print import log_print
 
-PAN_TADEUSZ_URL = "https://wolnelektury.pl/media/book/txt/pan-tadeusz.txt"
 CORPUS_FILENAME = "pan-tadeusz.txt"
 DEFAULT_VOCAB_SIZE = 8_192
 
 
+def package_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+
 def project_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return package_dir().parents[1]
 
 
-def resolve_data_dir() -> Path:
+def data_dir() -> Path:
     env = os.environ.get("LANGUAGE_RNN_DATA_DIR")
     if env:
         return Path(env)
+    return package_dir() / "data"
 
-    cache_root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
-    candidates = [
-        Path("/workspace/data/language"),
-        project_root() / "build" / "data" / "language",
-        cache_root / "rnn_lstm" / "corpus",
+
+def text_dir() -> Path:
+    return data_dir() / "text"
+
+
+def tokenizer_dir() -> Path:
+    env = os.environ.get("LANGUAGE_RNN_TOKENIZER_DIR")
+    if env:
+        return Path(env)
+    return data_dir() / "tokenizer"
+
+
+def default_corpus_path() -> Path:
+    return text_dir() / CORPUS_FILENAME
+
+
+def _legacy_corpus_sources() -> list[Path]:
+    root = project_root()
+    return [
+        root / "data" / CORPUS_FILENAME,
+        root / "data" / "pan_tadeusz.txt",
     ]
-    for path in candidates:
-        try:
-            path.mkdir(parents=True, exist_ok=True)
-            probe = path / ".write_probe"
-            probe.write_text("", encoding="utf-8")
-            probe.unlink(missing_ok=True)
-            return path
-        except OSError:
-            continue
-    raise RuntimeError("Brak zapisywalnego katalogu na tokenizer (ustaw LANGUAGE_RNN_DATA_DIR)")
 
 
-def _corpus_candidates(data_dir: Path | None) -> list[Path]:
-    data_dir = data_dir or resolve_data_dir()
-    roots = [project_root() / "data", data_dir]
-    names = (CORPUS_FILENAME, "pan_tadeusz.txt", "pan-tadeusz.txt")
-    out: list[Path] = []
-    seen: set[Path] = set()
-    for root in roots:
-        for name in names:
-            path = root / name
-            if path not in seen:
-                seen.add(path)
-                out.append(path)
-    return out
+def _ensure_corpus_file() -> Path:
+    dest = default_corpus_path()
+    if dest.is_file() and dest.stat().st_size > 10_000:
+        return dest
+
+    text_dir().mkdir(parents=True, exist_ok=True)
+    for src in _legacy_corpus_sources():
+        if src.is_file() and src.stat().st_size > 10_000:
+            shutil.copy2(src, dest)
+            log_print(f"Skopiowano korpus → {dest}")
+            return dest
+
+    raise FileNotFoundError(
+        f"Brak korpusu: umieść {CORPUS_FILENAME} w {text_dir()} "
+        f"lub ustaw LANGUAGE_RNN_CORPUS"
+    )
 
 
-def resolve_corpus_path(data_dir: Path | None = None) -> Path:
+def resolve_corpus_path() -> Path:
     env = os.environ.get("LANGUAGE_RNN_CORPUS")
     if env:
         path = Path(env)
         if path.is_file():
             return path
         raise FileNotFoundError(f"LANGUAGE_RNN_CORPUS nie istnieje: {path}")
-
-    for path in _corpus_candidates(data_dir):
-        if path.is_file() and path.stat().st_size > 10_000:
-            return path
-
-    return _download_corpus(data_dir)
+    return _ensure_corpus_file()
 
 
-def _download_corpus(data_dir: Path | None = None) -> Path:
-    data_dir = data_dir or resolve_data_dir()
-    data_dir.mkdir(parents=True, exist_ok=True)
-    path = data_dir / CORPUS_FILENAME
-
-    log_print(f"Brak lokalnego korpusu — pobieram: {PAN_TADEUSZ_URL}")
-    req = urllib.request.Request(PAN_TADEUSZ_URL, headers={"User-Agent": "Language_RNN-playground/0.1"})
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        raw = resp.read()
-    text = raw.decode("utf-8")
-    path.write_text(text, encoding="utf-8")
-    log_print(f"Zapisano {len(text):,} znaków → {path}")
-    return path
-
-
-def ensure_pan_tadeusz(data_dir: Path | None = None) -> Path:
+def ensure_pan_tadeusz() -> Path:
     """Zachowane dla kompatybilności — zwraca ścieżkę do korpusu."""
-    return resolve_corpus_path(data_dir)
+    return resolve_corpus_path()
 
 
-def load_corpus_text(path: Path) -> str:
+def load_corpus_text(path: Path | None = None) -> str:
+    path = path or resolve_corpus_path()
     text = path.read_text(encoding="utf-8")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     return text
 
 
-def _tokenizer_cache_dir(data_dir: Path | None = None) -> Path:
-    return (data_dir or resolve_data_dir()) / "bpe_bytelevel_tokenizer"
-
-
-def load_bpe_tokenizer(
-    corpus_path: Path,
+def load_tokenizer(
+    corpus_path: Path | None = None,
     vocab_size: int | None = None,
-    cache_dir: Path | None = None,
 ) -> PreTrainedTokenizerFast:
-    """BPE na bajtach (ByteLevel, jak GPT-2) — spacje w tokenach, nie giną między słowami."""
+    """NFC + Metaspace, BPE z byte_fallback — zapis w data/tokenizer/."""
+    corpus_path = corpus_path or resolve_corpus_path()
     vocab_size = vocab_size or int(os.environ.get("LANGUAGE_RNN_VOCAB_SIZE", DEFAULT_VOCAB_SIZE))
-    cache_dir = cache_dir or _tokenizer_cache_dir()
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    tokenizer_json = cache_dir / "tokenizer.json"
+    store = tokenizer_dir()
+    store.mkdir(parents=True, exist_ok=True)
+    tokenizer_json = store / "tokenizer.json"
 
     if tokenizer_json.is_file():
-        log_print(f"Tokenizer BPE z cache: {tokenizer_json}")
+        log_print(f"Tokenizer z {store}")
         return PreTrainedTokenizerFast(tokenizer_file=str(tokenizer_json))
 
-    log_print(f"Trenuję ByteLevel BPE (vocab={vocab_size:,}) na {corpus_path.name}…")
-    raw = Tokenizer(BPE(unk_token="<unk>"))
-    raw.pre_tokenizer = ByteLevel(add_prefix_space=False)
-    raw.decoder = decoders.ByteLevel()
+    log_print(f"Trenuję BPE byte_fallback (vocab={vocab_size:,}) na {corpus_path.name}…")
+    raw = Tokenizer(BPE(unk_token="<unk>", byte_fallback=True))
+    raw.normalizer = normalizers.NFC()
+    raw.pre_tokenizer = Metaspace()
+    raw.decoder = decoders.Sequence([decoders.ByteFallback(), decoders.Fuse()])
     trainer = BpeTrainer(
         vocab_size=vocab_size,
         special_tokens=["<unk>", "<|endoftext|>"],
@@ -140,7 +131,8 @@ def load_bpe_tokenizer(
         unk_token="<unk>",
         eos_token="<|endoftext|>",
     )
-    log_print(f"Tokenizer zapisany → {cache_dir} (vocab={tok.vocab_size:,})")
+    tok.save_pretrained(store)
+    log_print(f"Tokenizer zapisany → {store} (vocab={tok.vocab_size:,})")
     return tok
 
 
@@ -149,7 +141,7 @@ def encode_text(text: str, tokenizer: PreTrainedTokenizerFast) -> torch.Tensor:
     return torch.tensor(ids, dtype=torch.long)
 
 
-class CharSeqDataset(Dataset):
+class TokenSeqDataset(Dataset):
     """Okno [i : i+seq_len] → predykcja następnego tokenu na każdej pozycji."""
 
     def __init__(self, encoded: torch.Tensor, seq_len: int):
@@ -174,3 +166,19 @@ def split_encoded(encoded: torch.Tensor, train_frac: float = 0.9) -> tuple[torch
     n = len(encoded)
     split = int(n * train_frac)
     return encoded[:split].clone(), encoded[split:].clone()
+
+
+def prepare_language_data(seq_len: int) -> tuple[TokenSeqDataset, TokenSeqDataset, PreTrainedTokenizerFast, int]:
+    corpus_path = resolve_corpus_path()
+    text = load_corpus_text(corpus_path)
+    tokenizer = load_tokenizer(corpus_path)
+    vocab_size = tokenizer.vocab_size
+    encoded = encode_text(text, tokenizer)
+    train_enc, val_enc = split_encoded(encoded, train_frac=0.9)
+    train_ds = TokenSeqDataset(train_enc, seq_len)
+    val_ds = TokenSeqDataset(val_enc, seq_len)
+    log_print(
+        f"Korpus: {corpus_path.name}, {len(text):,} znaków → {len(encoded):,} tokenów, "
+        f"vocab={vocab_size}, train_windows={len(train_ds):,}, val_windows={len(val_ds):,}"
+    )
+    return train_ds, val_ds, tokenizer, vocab_size
