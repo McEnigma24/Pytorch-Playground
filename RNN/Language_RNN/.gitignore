@@ -10,4 +10,6 @@ runs/*
 !runs/.gitkeep
 
 *.log
+saved_models/
+!saved_models/.gitkeep
 checkpoints/

@@ -12,17 +12,18 @@ from typing import Any, TextIO
 _UNIX_INV_CEILING = 10**10
 _UNIX_INV_WIDTH = 10
 
-# Szerokość jak "99m 99s " — kolumny m/s wyrównane (2 cyfry przed m i przed s).
-_DIFF_PREFIX_WIDTH = 8
-_DIFF_PREFIX_EMPTY = " " * _DIFF_PREFIX_WIDTH
-
 _last_log_at: float | None = None
+
+
+def _format_wall_time(when: datetime | None = None) -> str:
+    when = when or datetime.now()
+    return when.strftime("%H:%M")
 
 
 def _format_diff(seconds: float) -> str:
     total = int(seconds)
     minutes, secs = divmod(total, 60)
-    return f"{minutes:2d}m {secs:2d}s "
+    return f"{minutes:2d}m {secs:2d}s"
 
 
 def tensorboard_run_dir(log_root: str, when: datetime | None = None) -> str:
@@ -39,12 +40,14 @@ def reset_log_timer() -> None:
 
 def log_print(*args: Any, sep: str = " ", end: str = "\n", file: TextIO | None = None, flush: bool = False) -> None:
     global _last_log_at
-    now = time.perf_counter()
+    now_mono = time.perf_counter()
+    wall = _format_wall_time()
 
     if _last_log_at is None:
-        prefix = _DIFF_PREFIX_EMPTY
+        diff_part = _format_diff(0)
     else:
-        prefix = _format_diff(now - _last_log_at)
+        diff_part = _format_diff(now_mono - _last_log_at)
 
-    _last_log_at = now
+    _last_log_at = now_mono
+    prefix = f"{wall} - {diff_part} -"
     print(prefix, *args, sep=sep, end=end, file=file, flush=flush)
