@@ -21,7 +21,7 @@ experiment = "rnnLSTM"
 # experiment = "infer_rnnLSTM"
 
 
-default_run = True
+default_run = False
 
 
 def main() -> str:
@@ -57,3 +57,11 @@ if __name__ == "__main__":
                 infer.main(architecture=experiment.removeprefix("infer_"))
 
     # Manual Stuff #
+
+
+    
+
+    train.main(tensorboard_dir=run_dir, architecture="rnnRNN")
+    train.main(tensorboard_dir=run_dir, architecture="rnnLSTM")
+    train.main(tensorboard_dir=run_dir, architecture="rnnGRU")
+

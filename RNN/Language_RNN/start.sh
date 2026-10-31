@@ -12,7 +12,10 @@
 set -euo pipefail
 
 clear
+
 export LANGUAGE_RNN_CHECKPOINT="${1:-}"
 export LANGUAGE_RNN_SAVE_DIR="${2:-}"
-python src/main.py
+
+    python src/main.py
+
 echo ""
