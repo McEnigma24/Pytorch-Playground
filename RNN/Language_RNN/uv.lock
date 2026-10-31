@@ -1239,11 +1239,14 @@ name = "ml-template"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "matplotlib" },
     { name = "mnists" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "onnxscript" },
+    { name = "pandas" },
     { name = "scikit-learn" },
+    { name = "seaborn" },
     { name = "tensorboard" },
     { name = "torch" },
     { name = "torchvision" },
@@ -1255,10 +1258,6 @@ dependencies = [
 dev = [
     { name = "pytest" },
 ]
-experiments = [
-    { name = "pandas" },
-    { name = "seaborn" },
-]
 jupyter = [
     { name = "ipykernel" },
     { name = "ipython" },
@@ -1268,10 +1267,13 @@ jupyter = [
 
 [package.metadata]
 requires-dist = [
+    { name = "matplotlib", specifier = ">=3.8.0" },
     { name = "mnists", specifier = ">=0.4.1" },
     { name = "numpy", specifier = ">=2.4.6" },
     { name = "onnxscript", specifier = ">=0.5.0" },
+    { name = "pandas", specifier = ">=2.2.0" },
     { name = "scikit-learn", specifier = ">=1.9.1" },
+    { name = "seaborn", specifier = ">=0.13.0" },
     { name = "tensorboard", specifier = ">=2.19.0" },
     { name = "torch", specifier = ">=2.9.1", index = "https://download.pytorch.org/whl/cu129" },
     { name = "torchvision", specifier = ">=0.28.0", index = "https://download.pytorch.org/whl/cu129" },
@@ -1281,10 +1283,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.0.0" }]
-experiments = [
-    { name = "pandas", specifier = ">=2.2.0" },
-    { name = "seaborn", specifier = ">=0.13.0" },
-]
 jupyter = [
     { name = "ipykernel", specifier = ">=6.29.0" },
     { name = "ipython", specifier = ">=8.30.0" },

@@ -1,4 +1,4 @@
-"""Trening language RNN — ten sam układ co SimpleNet w old_stuff.py."""
+"""Trening language RNN — ten sam układ co SimpleNet w old_stuff.mnist."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from models.rnnGRU import rnnGRU
 from models.rnnLSTM import rnnLSTM
 from models.rnnRNN import rnnRNN
 from text_and_tokenizer import prepare_language_data, tokenizer_dir
+from metrics.run_metrics import RunMetricsLogger
 from log_print import log_print, tensorboard_run_dir
 
 
@@ -69,7 +70,6 @@ class LanguageModelNet(nn.Module):
         architecture: str,
         embed_dim: int = 128,
         hidden_size: int = 256,
-        num_layers: int = 3,
         dropout: float = 0.3,
         seq_len: int = 100,
         device: torch.device | str | None = None,
@@ -81,10 +81,10 @@ class LanguageModelNet(nn.Module):
         self.seq_len = seq_len
         self.embed_dim = embed_dim
         self.hidden_size = hidden_size
-        self.num_layers = num_layers
         self.dropout = dropout
         self.model_name = architecture
         self.save_dir = Path(save_dir) if save_dir is not None else None
+        self.metrics_logger: RunMetricsLogger | None = None
 
         # Datasets #
         self.dataset_prep()
@@ -103,7 +103,6 @@ class LanguageModelNet(nn.Module):
             "vocab_size": self.vocab_size,
             "embed_dim": self.embed_dim,
             "hidden_size": self.hidden_size,
-            "num_layers": self.num_layers,
             "dropout": self.dropout,
         }
         match self.architecture:
@@ -147,7 +146,6 @@ class LanguageModelNet(nn.Module):
             "model_name": self.model_name,
             "embed_dim": self.embed_dim,
             "hidden_size": self.hidden_size,
-            "num_layers": self.num_layers,
             "dropout": self.dropout,
             "seq_len": self.seq_len,
             "vocab_size": self.vocab_size,
@@ -358,6 +356,15 @@ class LanguageModelNet(nn.Module):
 
             eval_loss, eval_ppl = self.evall(model, batch_size=batch_size, writer=writer, epoch=epoch + 1)
 
+            if self.metrics_logger is not None:
+                self.metrics_logger.log_epoch(
+                    epoch + 1,
+                    avg_loss,
+                    perplexity,
+                    eval_loss,
+                    eval_ppl,
+                )
+
             if eval_loss < best_eval_loss:
                 best_eval_loss = eval_loss
                 self.save_model_bundle(
@@ -435,21 +442,7 @@ class LanguageModelNet(nn.Module):
 
         with torch.no_grad():
             match self.architecture:
-                case "rnnLSTM":
-                    hidden = model.rnn.init_hidden(1)
-                    for idx in seed_ids:
-                        x = torch.tensor([[idx]], device=self.device, dtype=torch.long)
-                        logits, hidden = model(x, hidden)
-                        token_ids.append(idx)
-                    last_idx = seed_ids[-1]
-                    for _ in range(length):
-                        x = torch.tensor([[last_idx]], device=self.device, dtype=torch.long)
-                        logits, hidden = model(x, hidden)
-                        logits = logits.squeeze(0) / max(temperature, 1e-6)
-                        probs = torch.softmax(logits, dim=-1)
-                        last_idx = int(torch.multinomial(probs, num_samples=1).item())
-                        token_ids.append(last_idx)
-                case "rnnGRU" | "rnnRNN":
+                case "rnnGRU" | "rnnRNN" | "rnnLSTM":
                     hidden = model.rnn.init_hidden(1)
                     for idx in seed_ids:
                         x = torch.tensor([[idx]], device=self.device, dtype=torch.long)
@@ -475,7 +468,6 @@ def _net_from_hparams(hp: dict, device: torch.device, save_dir: Path) -> Languag
         architecture=architecture,
         embed_dim=hp.get("embed_dim", 128),
         hidden_size=hp.get("hidden_size", 256),
-        num_layers=hp.get("num_layers", 3),
         dropout=hp.get("dropout", 0.3),
         seq_len=hp.get("seq_len", 100),
         device=device,
@@ -550,6 +542,15 @@ def main(tensorboard_dir: str | None = None, *, architecture: str) -> None:
         log_print(f"Checkpoint wejściowy: {ckpt_path}")
 
     net, resume_payload = build_net_for_run(device, save_dir, ckpt_path, architecture)
+
+    metrics_logger = RunMetricsLogger(save_dir)
+    metrics_logger.write_meta(
+        architecture=architecture,
+        run_id=save_dir.name,
+        tensorboard_dir=tensorboard_dir,
+        hparams=net._training_hparams(),
+    )
+    net.metrics_logger = metrics_logger
 
     writer = SummaryWriter(tensorboard_dir)
     net._log_custom_scalars_layout(writer)

@@ -8,6 +8,7 @@ __pycache__/
 
 runs/*
 !runs/.gitkeep
+runs/plots/
 
 *.log
 saved_models/

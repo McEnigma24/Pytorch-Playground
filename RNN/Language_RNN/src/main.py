@@ -40,7 +40,6 @@ def main() -> str:
     subprocess.run(["clear"], check=False)
     return run_dir
 
-
 if __name__ == "__main__":
     run_dir = main()
 

@@ -6,6 +6,8 @@
 #
 # Przykład:
 #   ./start saved_models/rnnLSTM-2026.10.30/checkpoints/epoch_0010.pt saved_models/rnnLSTM-2026.10.30-cont
+#
+# Porównanie metryk (multi-line PNG): python src/metrics/plot_metrics.py
 
 set -euo pipefail
 

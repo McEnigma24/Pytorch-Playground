@@ -5,6 +5,8 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+NUM_STACKED_LAYERS = 3
+
 
 class rnnRNN(nn.Module):
 
@@ -17,12 +19,11 @@ class rnnRNN(nn.Module):
         vocab_size: int,
         embed_dim: int,
         hidden_size: int,
-        num_layers: int = 3,
         dropout: float = 0.3,
     ):
         super().__init__()
         self.hidden_size = hidden_size
-        self.num_layers = num_layers
+        self.num_layers = NUM_STACKED_LAYERS
         self.dropout_p = dropout
 
         self.embedding = nn.Embedding(vocab_size, embed_dim)
@@ -34,10 +35,10 @@ class rnnRNN(nn.Module):
 
         self.layers = nn.ModuleList(
             nn.RNN(hidden_size, hidden_size, num_layers=1, batch_first=True, nonlinearity="tanh")
-            for _ in range(num_layers)
+            for _ in range(NUM_STACKED_LAYERS)
         )
-        self.layer_norms = nn.ModuleList(nn.LayerNorm(hidden_size) for _ in range(num_layers))
-        self.dropouts = nn.ModuleList(nn.Dropout(dropout) for _ in range(num_layers))
+        self.layer_norms = nn.ModuleList(nn.LayerNorm(hidden_size) for _ in range(NUM_STACKED_LAYERS))
+        self.dropouts = nn.ModuleList(nn.Dropout(dropout) for _ in range(NUM_STACKED_LAYERS))
 
         self.fc = nn.Linear(hidden_size, vocab_size)
 

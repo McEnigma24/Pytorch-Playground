@@ -1,4 +1,4 @@
-"""Pojedynczy moduł (plik) na poziomie src/ — import: from module import ..."""
+"""MNIST SimpleNet — stary eksperyment (pakiet old_stuff)."""
 
 from __future__ import annotations
 
