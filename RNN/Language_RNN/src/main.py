@@ -5,12 +5,21 @@ from __future__ import annotations
 import os
 import subprocess
 
-import language_rnn as lr
-import simple_stuff as ss
+import rnn_lstm
+import simple_stuff
 from log_print import log_print, reset_log_timer, tensorboard_run_dir
 
 # experiment = "mnist"
-experiment = "char_rnn"
+
+# experiment = "rnn"
+experiment = "rnn_lstm"
+# experiment = "rnn_gru"
+
+# experiment = "transformer_nanoGPT"
+
+
+default_run = True
+
 
 
 def main() -> str:
@@ -29,12 +38,19 @@ def main() -> str:
     subprocess.run(["clear"], check=False)
     return run_dir
 
-
 if __name__ == "__main__":
     run_dir = main()
-    if experiment == "mnist":
-        ss.main(tensorboard_dir=run_dir)
-    elif experiment == "char_rnn":
-        lr.main(tensorboard_dir=run_dir)
-    else:
-        raise ValueError(f"Nieznany experiment: {experiment}")
+
+    # Default run #
+    if default_run == True:
+        match experiment:
+
+            case "mnist":
+                simple_stuff.main(tensorboard_dir=run_dir)
+
+            case "rnn_lstm":
+                rnn_lstm.main(tensorboard_dir=run_dir)
+
+
+
+    # Manual Stuff #

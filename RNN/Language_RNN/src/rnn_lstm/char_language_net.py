@@ -14,8 +14,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from language_rnn.char_rnn import CharRNN
-from language_rnn.text_data import (
+from rnn_lstm.char_rnn import CharRNN
+from rnn_lstm.text_data import (
     CharSeqDataset,
     encode_text,
     load_bpe_tokenizer,
@@ -25,8 +25,6 @@ from language_rnn.text_data import (
 )
 from log_print import log_print, tensorboard_run_dir
 
-
-DEFAULT_MODEL_NAME = "lstm"
 
 
 def project_root() -> Path:

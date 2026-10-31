@@ -34,7 +34,7 @@ def resolve_data_dir() -> Path:
     candidates = [
         Path("/workspace/data/language"),
         project_root() / "build" / "data" / "language",
-        cache_root / "language_rnn" / "corpus",
+        cache_root / "rnn_lstm" / "corpus",
     ]
     for path in candidates:
         try:

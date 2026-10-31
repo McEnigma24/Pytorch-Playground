@@ -6,7 +6,11 @@ import torch
 import torch.nn as nn
 
 
-class CharRNN(nn.Module):
+class rnnLSTM(nn.Module):
+
+    def name() -> str:
+        return "rnnLSTM"
+
     def __init__(
         self,
         vocab_size: int,
