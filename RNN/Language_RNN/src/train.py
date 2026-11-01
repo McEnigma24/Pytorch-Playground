@@ -299,6 +299,8 @@ class LanguageModelNet(nn.Module):
         writer: SummaryWriter | None = None,
         max_grad_norm: float = 1.0,
         resume_payload: dict | None = None,
+        checkpoint_every: int = 5,
+        eval_every: int = 5,
     ) -> tuple[torch.optim.Optimizer, float]:
         model.to(self.device)
         optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
@@ -379,8 +381,10 @@ class LanguageModelNet(nn.Module):
                 )
                 log_print(f"★ Nowy best eval: loss={eval_loss:.4f}, ppl={eval_ppl:.2f}")
 
-            if epoch % 5 == 0 or epoch == epochs - 1:
+            if epoch % checkpoint_every == 0 or epoch == epochs - 1:
                 self.save_checkpoint(model, optimizer, epoch + 1, eval_loss, eval_ppl, best_eval_loss)
+
+            if epoch % eval_every == 0 or epoch == epochs - 1:
                 sample = self.generate(model, seed="Litwo", length=200, temperature=0.8)
                 log_print(f"Generacja (200 tok.): {sample[:200]!r}")
 
@@ -518,7 +522,13 @@ def build_net_for_run(
     return net, payload
 
 
-def main(tensorboard_dir: str | None = None, *, architecture: str) -> None:
+def main(
+    tensorboard_dir: str | None = None,
+    *,
+    architecture: str,
+    checkpoint_every: int = 5,
+    eval_every: int = 5,
+) -> None:
     if tensorboard_dir is None:
         log_root = os.environ.get("TENSORBOARD_LOGDIR", "/workspace/runs")
         tensorboard_dir = tensorboard_run_dir(log_root)
@@ -555,8 +565,17 @@ def main(tensorboard_dir: str | None = None, *, architecture: str) -> None:
     writer = SummaryWriter(tensorboard_dir)
     net._log_custom_scalars_layout(writer)
     epochs = int(os.environ.get("LANGUAGE_RNN_EPOCHS", "30"))
+    ckpt_every = int(os.environ.get("LANGUAGE_RNN_CHECKPOINT_EVERY", str(checkpoint_every)))
+    sample_every = int(os.environ.get("LANGUAGE_RNN_EVAL_EVERY", str(eval_every)))
     try:
-        optimizer, best_eval_loss = net.trainn(net, epochs=epochs, writer=writer, resume_payload=resume_payload)
+        optimizer, best_eval_loss = net.trainn(
+            net,
+            epochs=epochs,
+            writer=writer,
+            resume_payload=resume_payload,
+            checkpoint_every=ckpt_every,
+            eval_every=sample_every,
+        )
         eval_loss, eval_ppl = net.evall(net, writer=writer, epoch=epochs)
         net.save_final(net, optimizer, epochs, eval_loss, eval_ppl, best_eval_loss)
         log_print(f"Best eval loss w runie: {best_eval_loss:.4f} (pliki {architecture}_best_eval.*)")
