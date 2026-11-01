@@ -56,11 +56,31 @@ if __name__ == "__main__":
             case "infer_rnnLSTM" | "infer_rnnGRU" | "infer_rnnRNN":
                 infer.main(architecture=experiment.removeprefix("infer_"))
 
+
+
     # Manual Stuff #
 
 
 
-    train.main( tensorboard_dir=run_dir, epochs=5, checkpoint_every=5, eval_every=1, run_tag="quick-test", architecture="rnnRNN",  )
-    train.main( tensorboard_dir=run_dir, epochs=5, checkpoint_every=5, eval_every=1, run_tag="quick-test", architecture="rnnLSTM", )
-    train.main( tensorboard_dir=run_dir, epochs=5, checkpoint_every=5, eval_every=1, run_tag="quick-test", architecture="rnnGRU",  )
+    # train.main( tensorboard_dir=run_dir, epochs=5, checkpoint_every=5, eval_every=1, run_tag="quick-test", architecture="rnnRNN",  )
+    # train.main( tensorboard_dir=run_dir, epochs=5, checkpoint_every=5, eval_every=1, run_tag="quick-test", architecture="rnnLSTM", )
+    # train.main( tensorboard_dir=run_dir, epochs=5, checkpoint_every=5, eval_every=1, run_tag="quick-test", architecture="rnnGRU",  )
+
+    seed = "Na zamku"
+    length = 25
+
+    infer.main(architecture="rnnRNN", seed=seed,
+                checkpoint_path="saved_models/rnnRNN-2026.11.01-011843-quick-test/rnnRNN_final.pt",
+                length=length,
+    )
+
+    infer.main(architecture="rnnLSTM", seed=seed,
+                checkpoint_path="saved_models/rnnLSTM-2026.11.01-012810-quick-test/rnnLSTM_final.pt",
+                length=length,
+    )
+
+    infer.main(architecture="rnnGRU", seed=seed,
+                checkpoint_path="saved_models/rnnGRU-2026.11.01-014552-quick-test/rnnGRU_final.pt",
+                length=length,
+    )
 

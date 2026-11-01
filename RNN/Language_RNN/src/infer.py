@@ -62,6 +62,6 @@ def main(
     ckpt = Path(checkpoint_path) if checkpoint_path else None
     net, _payload = load_for_inference(architecture, checkpoint_path=ckpt)
     text = net.generate(net, seed=seed, length=length, temperature=temperature)
-    log_print("--- Generacja (best_eval) ---")
-    log_print(text)
+    log_print("--- Generacja (best_eval) ---\n")
+    print(text)
     return text

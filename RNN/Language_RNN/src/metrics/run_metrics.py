@@ -21,7 +21,8 @@ META_FILENAME = "run_meta.json"
 
 
 def project_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    # .../Language_RNN/src/metrics/run_metrics.py → repo root (train.py uses parents[1] from src/)
+    return Path(__file__).resolve().parents[2]
 
 
 class RunMetricsLogger:
