@@ -25,14 +25,31 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def resolve_save_dir(model_name: str, when: datetime | None = None) -> Path:
-    """Nowy katalog runu: saved_models/rnnLSTM-YYYY.MM.DD-HHMMSS (o ile nie podano SAVE_DIR)."""
+def _sanitize_run_tag(tag: str) -> str:
+    cleaned = tag.strip().replace(" ", "-")
+    return "".join(c if c.isalnum() or c in "-_" else "-" for c in cleaned).strip("-")
+
+
+def _run_tag_suffix(run_tag: str | None) -> str:
+    if run_tag is None or not str(run_tag).strip():
+        return ""
+    safe = _sanitize_run_tag(str(run_tag))
+    return f"-{safe}" if safe else ""
+
+
+def resolve_save_dir(
+    model_name: str,
+    when: datetime | None = None,
+    run_tag: str | None = None,
+) -> Path:
+    """Nowy katalog runu: saved_models/{arch}-{YYYY.MM.DD-HHMMSS}[-{tag}] (o ile nie podano SAVE_DIR)."""
     env = os.environ.get("LANGUAGE_RNN_SAVE_DIR")
     if env:
         root = Path(env)
     else:
         when = when or datetime.now()
-        root = project_root() / "saved_models" / f"{model_name}-{when:%Y.%m.%d-%H%M%S}"
+        suffix = _run_tag_suffix(run_tag)
+        root = project_root() / "saved_models" / f"{model_name}-{when:%Y.%m.%d-%H%M%S}{suffix}"
     root.mkdir(parents=True, exist_ok=True)
     (root / "checkpoints").mkdir(parents=True, exist_ok=True)
     return root
@@ -320,7 +337,7 @@ class LanguageModelNet(nn.Module):
         if start_epoch >= epochs:
             log_print(
                 f"Checkpoint ma epokę {start_epoch} ≥ cel {epochs} — pomijam trening. "
-                f"Ustaw więcej epok (np. LANGUAGE_RNN_EPOCHS=60)."
+                f"Ustaw więcej epok (np. epochs=60 w train.main)."
             )
             return optimizer, best_eval_loss
 
@@ -526,8 +543,10 @@ def main(
     tensorboard_dir: str | None = None,
     *,
     architecture: str,
+    epochs: int = 30,
     checkpoint_every: int = 5,
     eval_every: int = 5,
+    run_tag: str | None = None,
 ) -> None:
     if tensorboard_dir is None:
         log_root = os.environ.get("TENSORBOARD_LOGDIR", "/workspace/runs")
@@ -544,7 +563,7 @@ def main(
         raise ValueError(
             "Wznowienie wymaga katalogu zapisu: ./start <checkpoint.pt> <save_dir>"
         )
-    save_dir = Path(save_env) if save_env else resolve_save_dir(architecture)
+    save_dir = Path(save_env) if save_env else resolve_save_dir(architecture, run_tag=run_tag)
     save_dir.mkdir(parents=True, exist_ok=True)
     (save_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
     log_print(f"Katalog zapisu: {save_dir}")
@@ -564,7 +583,6 @@ def main(
 
     writer = SummaryWriter(tensorboard_dir)
     net._log_custom_scalars_layout(writer)
-    epochs = int(os.environ.get("LANGUAGE_RNN_EPOCHS", "30"))
     ckpt_every = int(os.environ.get("LANGUAGE_RNN_CHECKPOINT_EVERY", str(checkpoint_every)))
     sample_every = int(os.environ.get("LANGUAGE_RNN_EVAL_EVERY", str(eval_every)))
     try:

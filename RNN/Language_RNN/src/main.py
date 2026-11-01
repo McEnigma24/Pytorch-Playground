@@ -60,8 +60,7 @@ if __name__ == "__main__":
 
 
 
-
-    train.main(tensorboard_dir=run_dir, epochs=10, checkpoint_every = 5, eval_every = 5, architecture="rnnRNN")
-    train.main(tensorboard_dir=run_dir, epochs=10, checkpoint_every = 5, eval_every = 5, architecture="rnnLSTM")
-    train.main(tensorboard_dir=run_dir, epochs=10, checkpoint_every = 5, eval_every = 5, architecture="rnnGRU")
+    train.main( tensorboard_dir=run_dir, epochs=10, checkpoint_every=5, eval_every=1, run_tag="quick-test", architecture="rnnRNN",  )
+    train.main( tensorboard_dir=run_dir, epochs=10, checkpoint_every=5, eval_every=1, run_tag="quick-test", architecture="rnnLSTM", )
+    train.main( tensorboard_dir=run_dir, epochs=10, checkpoint_every=5, eval_every=1, run_tag="quick-test", architecture="rnnGRU",  )
 
