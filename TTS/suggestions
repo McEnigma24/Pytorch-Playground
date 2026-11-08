@@ -1,0 +1,189 @@
+Ambitne podejście! PDF.js to potężne narzędzie (stworzone przez Mozillę do przeglądarki Firefox), ale praca z nim bywa podchwytliwa.
+
+Aby to osiągnąć, zbudujemy "kanapkę":
+
+Dół (Canvas): PDF.js wyrysuje stronę PDF-a jako zwykły obrazek, żeby wyglądała dokładnie tak, jak w oryginale.
+
+Góra (Text Layer): PDF.js wygeneruje nad obrazkiem niewidzialną warstwę tekstu (HTML), zachowując oryginalne pozycje słów.
+
+Magia (Mark.js): PDF.js często tnie jedno zdanie na kilkanaście osobnych elementów HTML (np. gdy zmienia się odstęp między literami). Szukanie tego ręcznie w JavaScript to koszmar. Użyjemy malutkiej biblioteki Mark.js, która znajdzie tekst z pliku VTT niezależnie od tego, jak PDF.js go pociął, i nałoży na niego półprzezroczysty żółty kolor.
+
+Oto kompletny kod, jak to złożyć w całość.
+
+Krok 1: Dodaj biblioteki (w sekcji <head>)
+Musimy zaciągnąć PDF.js, jego style oraz bibliotekę Mark.js.
+
+HTML
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <title>Czytnik PDF.js</title>
+
+    <!-- Główne pliki PDF.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf_viewer.min.css">
+
+    <!-- Biblioteka Mark.js do podświetlania tekstu -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mark.js/8.11.1/mark.min.js"></script>
+
+    <style>
+        body { font-family: sans-serif; text-align: center; background: #f0f0f0; padding: 20px; }
+
+        /* Pojemnik na naszą "kanapkę" */
+        #pdf-pojemnik {
+            position: relative; /* Pozwala nałożyć tekst na obrazek */
+            display: inline-block;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            background: white;
+        }
+
+        /* Warstwa tekstowa generowana przez PDF.js */
+        #warstwa-tekstu {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            /* Ustaw na opacity: 0.5 podczas testów, by widzieć jak układa się HTML */
+        }
+
+        /* Ukrywamy oryginalny tekst z HTML (widzimy ten narysowany na canvasie) */
+        #warstwa-tekstu > span {
+            color: transparent !important;
+        }
+
+        /* Wygląd podświetlenia Mark.js */
+        #warstwa-tekstu mark {
+            background-color: rgba(255, 235, 59, 0.4); /* Półprzezroczysty żółty */
+            color: transparent;
+        }
+
+        audio { margin-bottom: 20px; width: 100%; max-width: 600px; }
+    </style>
+</head>
+Krok 2: Zbuduj strukturę (w sekcji <body>)
+Wrzucamy odtwarzacz audio oraz nasz pojemnik na PDF.
+
+HTML
+<body>
+
+    <!-- Odtwarzacz -->
+    <audio id="odtwarzacz" controls>
+        <source src="nagranie.mp3" type="audio/mpeg">
+        <track id="napisy-track" kind="metadata" src="napisy.vtt" srclang="pl" default>
+    </audio>
+
+    <br>
+
+    <!-- Kanapka PDF -->
+    <div id="pdf-pojemnik">
+        <!-- Obrazek (tło) -->
+        <canvas id="pdf-canvas"></canvas>
+        <!-- Niewidzialny tekst (do podświetlania) -->
+        <div id="warstwa-tekstu" class="textLayer"></div>
+    </div>
+
+</body>
+</html>
+Krok 3: Skrypt sterujący (przed zamykającym </body>)
+Ten kod ładuje dokument, rysuje go, a potem nasłuchuje zmian w pliku audio.
+
+Ważne: Zmień zmienną urlPlikuPdf na ścieżkę do swojego pliku PDF. Pamiętaj też, że tekst w pliku VTT musi dokładnie zgadzać się z tym, co jest w PDF-ie, inaczej skrypt go nie znajdzie.
+
+JavaScript
+<script>
+    // 1. Konfiguracja PDF.js (wymaga podania ścieżki do "workera")
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+    const urlPlikuPdf = 'twoj-dokument.pdf'; // TUTAJ PODAJ SWÓJ PLIK
+    const skala = 1.5; // Powiększenie dokumentu
+
+    // 2. Renderowanie PDF-a
+    pdfjsLib.getDocument(urlPlikuPdf).promise.then(pdf => {
+        return pdf.getPage(1); // Na razie pobieramy tylko pierwszą stronę
+    }).then(page => {
+        const viewport = page.getViewport({ scale: skala });
+
+        // A. Rysowanie warstwy wizualnej (Canvas)
+        const canvas = document.getElementById('pdf-canvas');
+        const context = canvas.getContext('2d');
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+
+        page.render({
+            canvasContext: context,
+            viewport: viewport
+        });
+
+        // B. Rysowanie warstwy tekstowej (HTML)
+        return page.getTextContent().then(textContent => {
+            const warstwaTekstu = document.getElementById('warstwa-tekstu');
+
+            // Dopasowujemy wielkość nakładki tekstowej do obrazka
+            warstwaTekstu.style.height = canvas.height + 'px';
+            warstwaTekstu.style.width = canvas.width + 'px';
+            warstwaTekstu.style.setProperty('--scale-factor', viewport.scale);
+
+            // Budujemy tekst HTML
+            pdfjsLib.renderTextLayer({
+                textContentSource: textContent,
+                container: warstwaTekstu,
+                viewport: viewport,
+                textDivs: []
+            });
+        });
+    });
+
+    // 3. Łączenie Audio z tekstem
+    const odtwarzacz = document.getElementById('odtwarzacz');
+    const track = document.getElementById('napisy-track');
+
+    // Inicjalizujemy Mark.js na naszej warstwie tekstowej
+    const marker = new Mark(document.getElementById('warstwa-tekstu'));
+
+    track.addEventListener('load', function() {
+        const textTrack = this.track;
+        textTrack.mode = 'hidden';
+
+        // Gdy audio przechodzi do nowej linijki pliku VTT...
+        textTrack.addEventListener('cuechange', () => {
+            // Czyścimy poprzednie podświetlenia
+            marker.unmark();
+
+            const aktywneFragmenty = textTrack.activeCues;
+
+            if (aktywneFragmenty.length > 0) {
+                // Bierzemy tekst z VTT (np. "To jest pierwsze zdanie z PDF.")
+                const czytanyTekst = aktywneFragmenty[0].text;
+
+                // Mark.js szuka tego zdania w warstwie tekstowej i je podświetla
+                marker.mark(czytanyTekst, {
+                    accuracy: "partially", // Ignoruje drobne błędy w spacjach
+                    acrossElements: true   // KLUCZOWE: Pozwala znaleźć zdanie rozbite na wiele elementów <span>
+                });
+            }
+        });
+    });
+</script>
+
+
+Dobra, to ja mam takie pytanie. Co będzie łatwiej zrobić, czy skrypt przeglądarkowy? Bo teraz tak, nic nie będziemy robić lokalnie, zmieniliśmy zdanie. Będziemy mieli dostępny serwer, z którego pobierzemy sobie wszystko. Po prostu serwer to będzie jedna jakaś taka bardzo prosta, no nie wiem, stronka internetowa albo po prostu endpoint, który nam po pierwsze na przykład zwróci to, jakie materiały są dostępne. I drugie, kiedy sobie klikniemy na konkretny jakiś tam materiał, to po prostu dostajemy tego PDF-a, dostajemy nagranie MP3 czy tam ten WAV i dostajemy też to nagranie WebVTT, które nam daje te timestampy, po których jakby stworzymy sobie śledzenie tekstu. I teraz pytanie, czy będzie łatwiej zrobić aplikację taką na Androida w Kotlinie albo w Darcie, czy po prostu jakąś wersję przeglądarkową? W takim systemie zastanów się, co będzie najszybsze do stworzenia. Kiedyś już robiłem jakąś aplikację w Darcie, więc chyba mam pod to działające dalej środowisko, ale no nie wiem, weź to w każdym razie pod uwagę.
+
+Zdecydowanie najszybsza i najłatwiejsza do zrobienia będzie wersja przeglądarkowa (Web). Choć masz już gotowe środowisko do Darta, specyfika pracy z plikami PDF i WebVTT sprawia, że na rozwiązaniach mobilnych ten konkretny projekt będzie kosztował Cię znacznie więcej nerwów i czasu.
+
+Oto jak rozkłada się poziom trudności dla Twoich wymagań:
+
+Funkcjonalność	Web (Przeglądarka)	Dart (Flutter)	Kotlin (Android Native)
+Komunikacja z API (lista plików)	Trywialne (wbudowany fetch)	Proste (paczka http)	Proste (np. Retrofit)
+Odtwarzanie Audio	Wbudowane (<audio>)	Zewnętrzna biblioteka	Wbudowane (MediaPlayer)
+Czytanie i śledzenie WebVTT	Wbudowane i darmowe (<track>)	Brak natywnego wsparcia (trzeba pisać parser i synchronizator)	Trzeba szukać zewnętrznych parserów
+Podświetlanie tekstu w PDF	Umiarkowane (PDF.js tworzy edytowalną warstwę HTML)	Bardzo trudne (PDF to płaski obraz)	Bardzo trudne (PDF to płaski obraz)
+Główną pułapką, na którą trafisz tworząc aplikację mobilną w Darcie lub Kotlinie, jest architektura renderowania PDF. Standardowe, darmowe biblioteki mobilne (np. pdfx we Flutterze czy PdfRenderer w Androidzie) renderują strony dokumentu jako bitmapy (zwykłe obrazki rastrowe). Otrzymujesz zdjęcie strony, na którym nie ma jak zaznaczyć tekstu, bo aplikacja nie wie, gdzie znajdują się konkretne słowa (nie zna ich współrzędnych X i Y). Wyciągnięcie tych danych i nałożenie podświetlenia na telefonie zazwyczaj zmusza do użycia potężnych, płatnych silników komercyjnych (jak PSPDFKit).
+
+W przeglądarce ten problem rozwiązuje za darmo PDF.js, który buduje "kanapkę" – pod spodem kładzie obrazek dla zachowania wyglądu dokumentu, a na wierzch rzuca przezroczystą warstwę zwykłego HTML-a. Dzięki temu wyszukiwanie i podświetlanie tekstu działa dokładnie tak samo, jak na każdej innej stronie internetowej. Dodatkowo tag <audio> z podpiętym <track> z automatu odpala zdarzenia w JavaScript (tzw. cuechange), kiedy nadchodzi czas na nową linijkę tekstu z VTT.
+
+Twoja architektura jest idealna pod lekką aplikację webową (tzw. SPA - Single Page Application). Całość zamknie się w jednym widoku:
+
+Pobierasz JSON-a z serwera przez fetch().
+
+Wyświetlasz listę kafelków z materiałami.
+
+Po kliknięciu ładujesz odtwarzacz i PDF.js z nowymi linkami z serwera, chowając listę materiałów.
