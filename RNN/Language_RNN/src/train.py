@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import math
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -13,9 +14,16 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
+from models.model_report import build_model_report
+from models.rnnAWDLSTM import rnnAWDLSTM
+from models.rnnBaseLSTM import rnnBaseLSTM
+from models.rnnGoldenLSTM import rnnGoldenLSTM
 from models.rnnGRU import rnnGRU
 from models.rnnLSTM import rnnLSTM
 from models.rnnRNN import rnnRNN
+from models.transformer_GPT2small import transformer_GPT2small
+from models.transformer_miniLLaMA import transformer_miniLLaMA
+from models.transformer_nanoGPT import transformer_nanoGPT
 from text_and_tokenizer import prepare_language_data, tokenizer_dir
 from metrics.run_metrics import RunMetricsLogger
 from log_print import log_print, tensorboard_run_dir
@@ -81,6 +89,36 @@ def resolve_device(device: torch.device | str | None = None) -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def _sync_device(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+
+TRANSFORMER_ARCHITECTURES = frozenset(
+    {"transformer_nanoGPT", "transformer_miniLLaMA", "transformer_GPT2small"}
+)
+
+
+def _default_num_layers(architecture: str) -> int:
+    match architecture:
+        case "rnnBaseLSTM" | "rnnAWDLSTM":
+            return 4
+        case "rnnGoldenLSTM":
+            return 1
+        case "transformer_nanoGPT":
+            return 6
+        case "transformer_miniLLaMA" | "transformer_GPT2small":
+            return 12
+        case _:
+            return 3
+
+
+def _default_num_heads(hidden_size: int, num_heads: int | None) -> int:
+    if num_heads is not None:
+        return num_heads
+    return max(1, hidden_size // 64)
+
+
 class LanguageModelNet(nn.Module):
     def __init__(
         self,
@@ -91,6 +129,11 @@ class LanguageModelNet(nn.Module):
         seq_len: int = 100,
         device: torch.device | str | None = None,
         save_dir: Path | str | None = None,
+        *,
+        num_layers: int | None = None,
+        num_heads: int | None = None,
+        ff_size: int | None = None,
+        window_stride: int = 1,
     ):
         super().__init__()
 
@@ -99,6 +142,10 @@ class LanguageModelNet(nn.Module):
         self.embed_dim = embed_dim
         self.hidden_size = hidden_size
         self.dropout = dropout
+        self.num_layers = num_layers if num_layers is not None else _default_num_layers(architecture)
+        self.num_heads = _default_num_heads(hidden_size, num_heads)
+        self.ff_size = ff_size
+        self.window_stride = window_stride
         self.model_name = architecture
         self.save_dir = Path(save_dir) if save_dir is not None else None
         self.metrics_logger: RunMetricsLogger | None = None
@@ -121,6 +168,7 @@ class LanguageModelNet(nn.Module):
             "embed_dim": self.embed_dim,
             "hidden_size": self.hidden_size,
             "dropout": self.dropout,
+            "num_layers": self.num_layers,
         }
         match self.architecture:
             case "rnnLSTM":
@@ -129,14 +177,46 @@ class LanguageModelNet(nn.Module):
                 self.rnn = rnnGRU(**kwargs)
             case "rnnRNN":
                 self.rnn = rnnRNN(**kwargs)
+            case "rnnBaseLSTM":
+                self.rnn = rnnBaseLSTM(**kwargs)
+            case "rnnAWDLSTM":
+                self.rnn = rnnAWDLSTM(**kwargs)
+            case "rnnGoldenLSTM":
+                self.rnn = rnnGoldenLSTM(**kwargs)
+            case "transformer_nanoGPT":
+                self.rnn = transformer_nanoGPT(
+                    **kwargs,
+                    num_heads=self.num_heads,
+                    ff_size=self.ff_size,
+                    seq_len=self.seq_len,
+                )
+            case "transformer_miniLLaMA":
+                self.rnn = transformer_miniLLaMA(
+                    **kwargs,
+                    num_heads=self.num_heads,
+                    ff_size=self.ff_size,
+                    seq_len=self.seq_len,
+                )
+            case "transformer_GPT2small":
+                self.rnn = transformer_GPT2small(
+                    **kwargs,
+                    num_heads=self.num_heads,
+                    ff_size=self.ff_size,
+                    seq_len=self.seq_len,
+                )
             case _:
                 raise ValueError(f"Nieznana architektura: {self.architecture!r}")
 
-    def forward(self, x: torch.Tensor, hidden=None):
+    def forward(self, x: torch.Tensor, hidden=None, *, pos_start: int = 0):
+        if self.architecture in TRANSFORMER_ARCHITECTURES:
+            return self.rnn(x, hidden, pos_start=pos_start)
         return self.rnn(x, hidden)
 
     def dataset_prep(self) -> None:
-        self.train_ds, self.val_ds, self.tokenizer, self.vocab_size = prepare_language_data(self.seq_len)
+        self.train_ds, self.val_ds, self.tokenizer, self.vocab_size = prepare_language_data(
+            self.seq_len,
+            window_stride=self.window_stride,
+        )
 
     def _data_loader(self, dataset, batch_size: int, shuffle: bool) -> DataLoader:
         pin_memory = self.device.type == "cuda"
@@ -158,16 +238,33 @@ class LanguageModelNet(nn.Module):
         )
 
     def _training_hparams(self) -> dict:
-        return {
+        hp = {
             "architecture": self.architecture,
             "model_name": self.model_name,
             "embed_dim": self.embed_dim,
             "hidden_size": self.hidden_size,
             "dropout": self.dropout,
             "seq_len": self.seq_len,
+            "num_layers": self.num_layers,
+            "num_heads": self.num_heads,
+            "ff_size": self.ff_size,
+            "window_stride": self.window_stride,
             "vocab_size": self.vocab_size,
             "tokenizer_dir": str(tokenizer_dir()),
         }
+        if self.architecture in TRANSFORMER_ARCHITECTURES:
+            hp["ff_size"] = getattr(self.rnn, "ff_size", self.ff_size)
+        return hp
+
+    def _model_report(self) -> dict:
+        desc_fn = getattr(type(self.rnn), "description", None)
+        description = desc_fn() if callable(desc_fn) else ""
+        return build_model_report(
+            self,
+            architecture=self.architecture,
+            description=description,
+            configured_dropout=self.dropout,
+        )
 
     def _ensure_save_dir(self) -> Path:
         if self.save_dir is None:
@@ -302,8 +399,12 @@ class LanguageModelNet(nn.Module):
         )
 
     def _batch_hidden(self, batch_n: int):
+        if self.architecture in TRANSFORMER_ARCHITECTURES:
+            return None
         match self.architecture:
-            case "rnnLSTM":
+            case "rnnLSTM" | "rnnBaseLSTM" | "rnnAWDLSTM":
+                return self.rnn.init_hidden(batch_n)
+            case "rnnGoldenLSTM":
                 return self.rnn.init_hidden(batch_n)
             case "rnnGRU" | "rnnRNN":
                 return self.rnn.init_hidden(batch_n)
@@ -344,6 +445,7 @@ class LanguageModelNet(nn.Module):
         train_loader = self._data_loader(self.train_ds, batch_size, shuffle=True)
 
         for epoch in range(start_epoch, epochs):
+            t_train0 = time.perf_counter()
             model.train()
             running_loss = torch.zeros((), device=self.device)
             total_targets = 0
@@ -366,14 +468,20 @@ class LanguageModelNet(nn.Module):
                 total_targets += n_targets
 
             avg_loss = (running_loss / total_targets).item()
+            train_seconds = time.perf_counter() - t_train0
             perplexity = math.exp(min(avg_loss, 20.0))
-            log_print(f"Epoka {epoch + 1}: loss={avg_loss:.4f} train_perplexity={perplexity:.2f}")
+            log_print(
+                f"Epoka {epoch + 1}: loss={avg_loss:.4f} train_perplexity={perplexity:.2f} "
+                f"({train_seconds:.1f}s train)"
+            )
             if writer is not None:
                 step = epoch + 1
                 writer.add_scalar("train/loss", avg_loss, step)
                 writer.add_scalar("train/perplexity", perplexity, step)
 
+            t_eval0 = time.perf_counter()
             eval_loss, eval_ppl = self.evall(model, batch_size=batch_size, writer=writer, epoch=epoch + 1)
+            eval_seconds = time.perf_counter() - t_eval0
 
             if self.metrics_logger is not None:
                 self.metrics_logger.log_epoch(
@@ -382,6 +490,8 @@ class LanguageModelNet(nn.Module):
                     perplexity,
                     eval_loss,
                     eval_ppl,
+                    train_seconds,
+                    eval_seconds,
                 )
 
             if eval_loss < best_eval_loss:
@@ -402,7 +512,7 @@ class LanguageModelNet(nn.Module):
                 self.save_checkpoint(model, optimizer, epoch + 1, eval_loss, eval_ppl, best_eval_loss)
 
             if epoch % eval_every == 0 or epoch == epochs - 1:
-                sample = self.generate(model, seed="W", length=200, temperature=0.8)
+                sample, _stats = self.generate(model, seed="W", length=200, temperature=0.8)
                 log_print(f"Generacja (200 tok.): {sample[:200]!r}")
 
         return optimizer, best_eval_loss
@@ -445,13 +555,34 @@ class LanguageModelNet(nn.Module):
             writer.add_scalar("eval/perplexity", perplexity, epoch)
         return avg_loss, perplexity
 
+    def _perplexity_from_logits(
+        self,
+        logits_list: list[torch.Tensor],
+        targets: list[int],
+        temperature: float = 1.0,
+    ) -> float:
+        if not targets or len(logits_list) < len(targets):
+            return float("nan")
+        running = 0.0
+        for logit, target in zip(logits_list[: len(targets)], targets):
+            scaled = logit.squeeze(0) / max(temperature, 1e-6)
+            loss = self.cost_function(
+                scaled.unsqueeze(0),
+                torch.tensor([target], device=scaled.device, dtype=torch.long),
+            )
+            running += loss.item()
+        avg = running / len(targets)
+        return math.exp(min(avg, 20.0))
+
     def generate(
         self,
         model: LanguageModelNet,
         seed: str = "W",
         length: int = 400,
         temperature: float = 1.0,
-    ) -> str:
+        *,
+        measure: bool = True,
+    ) -> tuple[str, dict]:
         model.eval()
         model.to(self.device)
         tok = self.tokenizer
@@ -460,25 +591,105 @@ class LanguageModelNet(nn.Module):
             seed_ids = [tok.unk_token_id or 0]
 
         token_ids: list[int] = []
+        prefill_logits: list[torch.Tensor] = []
+        gen_logits: list[torch.Tensor] = []
+        prefill_seconds = 0.0
+        generate_seconds = 0.0
 
         with torch.no_grad():
-            match self.architecture:
-                case "rnnGRU" | "rnnRNN" | "rnnLSTM":
-                    hidden = model.rnn.init_hidden(1)
-                    for idx in seed_ids:
-                        x = torch.tensor([[idx]], device=self.device, dtype=torch.long)
-                        logits, hidden = model(x, hidden)
-                        token_ids.append(idx)
-                    last_idx = seed_ids[-1]
-                    for _ in range(length):
-                        x = torch.tensor([[last_idx]], device=self.device, dtype=torch.long)
-                        logits, hidden = model(x, hidden)
-                        logits = logits.squeeze(0) / max(temperature, 1e-6)
-                        probs = torch.softmax(logits, dim=-1)
-                        last_idx = int(torch.multinomial(probs, num_samples=1).item())
-                        token_ids.append(last_idx)
+            if self.architecture in TRANSFORMER_ARCHITECTURES:
+                pos_start = 0
+                ids_tensor = torch.tensor([seed_ids], device=self.device, dtype=torch.long)
+                if measure:
+                    _sync_device(self.device)
+                    t_prefill = time.perf_counter()
+                window = ids_tensor[:, -self.seq_len :]
+                pos_start = max(0, len(seed_ids) - window.size(1))
+                logits_flat, cache = model(window, None, pos_start=pos_start)
+                logits = logits_flat.view(window.size(0), window.size(1), -1)
+                prefill_logits.extend(logits[:, i, :] for i in range(logits.size(1)))
+                token_ids.extend(seed_ids)
+                if measure:
+                    _sync_device(self.device)
+                    prefill_seconds = time.perf_counter() - t_prefill
+                    _sync_device(self.device)
+                    t_gen = time.perf_counter()
+                logits = logits[:, -1, :]
+                for _ in range(length):
+                    gen_logits.append(logits)
+                    scaled = logits.squeeze(0) / max(temperature, 1e-6)
+                    last_idx = int(torch.multinomial(torch.softmax(scaled, dim=-1), 1).item())
+                    token_ids.append(last_idx)
+                    total_len = len(token_ids)
+                    if total_len >= self.seq_len:
+                        restart = max(self.seq_len // 2, 1)
+                        chunk = torch.tensor([token_ids[-restart:]], device=self.device, dtype=torch.long)
+                        pos_start = total_len - restart
+                        logits_flat, cache = model(chunk, None, pos_start=pos_start)
+                        logits = logits_flat.view(1, chunk.size(1), -1)[:, -1, :]
+                    else:
+                        step = torch.tensor([[last_idx]], device=self.device, dtype=torch.long)
+                        pos_start = total_len - 1
+                        logits_flat, cache = model(step, cache, pos_start=pos_start)
+                        logits = logits_flat.view(1, 1, -1)[:, -1, :]
+                if measure:
+                    _sync_device(self.device)
+                    generate_seconds = time.perf_counter() - t_gen
+            else:
+                match self.architecture:
+                    case "rnnGRU" | "rnnRNN" | "rnnLSTM" | "rnnBaseLSTM" | "rnnAWDLSTM" | "rnnGoldenLSTM":
+                        hidden = model.rnn.init_hidden(1)
+                        if measure:
+                            _sync_device(self.device)
+                            t_prefill = time.perf_counter()
+                        # Prefill #
+                        for idx in seed_ids:
+                            x = torch.tensor([[idx]], device=self.device, dtype=torch.long)
+                            logits, hidden = model(x, hidden)
+                            prefill_logits.append(logits)
+                            token_ids.append(idx)
+                        if measure:
+                            _sync_device(self.device)
+                            prefill_seconds = time.perf_counter() - t_prefill
+                            _sync_device(self.device)
+                            t_gen = time.perf_counter()
+                        # Generate #
+                        for _ in range(length):
+                            gen_logits.append(logits)
+                            scaled = logits.squeeze(0) / max(temperature, 1e-6)
+                            probs = torch.softmax(scaled, dim=-1)
+                            last_idx = int(torch.multinomial(probs, num_samples=1).item())
+                            token_ids.append(last_idx)
+                            x = torch.tensor([[last_idx]], device=self.device, dtype=torch.long)
+                            logits, hidden = model(x, hidden)
+                        if measure:
+                            _sync_device(self.device)
+                            generate_seconds = time.perf_counter() - t_gen
+                    case _:
+                        raise ValueError(f"Generacja nieobsługiwana: {self.architecture!r}")
 
-        return tok.decode(token_ids, skip_special_tokens=True)
+        prompt_targets = seed_ids[1:]
+        prompt_logits = prefill_logits[:-1] if len(prefill_logits) > 1 else []
+        generated_targets = token_ids[len(seed_ids) :]
+
+        stats = {
+            "prompt_tokens": len(seed_ids),
+            "generated_tokens": length,
+            "prefill_seconds": prefill_seconds,
+            "generate_seconds": generate_seconds,
+            "inference_seconds": prefill_seconds + generate_seconds,
+            "tokens_per_second": (
+                length / generate_seconds if measure and generate_seconds > 0 else float("nan")
+            ),
+            "prompt_perplexity": self._perplexity_from_logits(prompt_logits, prompt_targets, 1.0),
+            "generate_perplexity": self._perplexity_from_logits(gen_logits, generated_targets, 1.0),
+            "sampling_perplexity": self._perplexity_from_logits(
+                gen_logits, generated_targets, temperature
+            ),
+            "temperature": temperature,
+        }
+        text = tok.decode(token_ids, skip_special_tokens=True)
+        return text, stats
 
 
 def _net_from_hparams(hp: dict, device: torch.device, save_dir: Path) -> LanguageModelNet:
@@ -493,6 +704,10 @@ def _net_from_hparams(hp: dict, device: torch.device, save_dir: Path) -> Languag
         seq_len=hp.get("seq_len", 100),
         device=device,
         save_dir=save_dir,
+        num_layers=hp.get("num_layers"),
+        num_heads=hp.get("num_heads"),
+        ff_size=hp.get("ff_size"),
+        window_stride=hp.get("window_stride", 1),
     )
     net.model_name = hp.get("model_name", architecture)
     net.save_dir = save_dir
@@ -527,9 +742,10 @@ def build_net_for_run(
     save_dir: Path,
     checkpoint_path: Path | None,
     architecture: str,
+    **model_kwargs,
 ) -> tuple[LanguageModelNet, dict | None]:
     if checkpoint_path is None:
-        net = LanguageModelNet(architecture=architecture, device=device, save_dir=save_dir)
+        net = LanguageModelNet(architecture=architecture, device=device, save_dir=save_dir, **model_kwargs)
         net.save_dir = save_dir
         return net, None
 
@@ -547,6 +763,15 @@ def main(
     checkpoint_every: int = 5,
     eval_every: int = 5,
     run_tag: str | None = None,
+    embed_dim: int = 128,
+    hidden_size: int = 256,
+    num_layers: int | None = None,
+    num_heads: int | None = None,
+    ff_size: int | None = None,
+    dropout: float = 0.3,
+    seq_len: int = 100,
+    window_stride: int = 1,
+    batch_size: int = 128,
 ) -> None:
     if tensorboard_dir is None:
         log_root = os.environ.get("TENSORBOARD_LOGDIR", "/workspace/runs")
@@ -570,7 +795,17 @@ def main(
     if ckpt_path:
         log_print(f"Checkpoint wejściowy: {ckpt_path}")
 
-    net, resume_payload = build_net_for_run(device, save_dir, ckpt_path, architecture)
+    model_kwargs = {
+        "embed_dim": embed_dim,
+        "hidden_size": hidden_size,
+        "dropout": dropout,
+        "seq_len": seq_len,
+        "num_layers": num_layers,
+        "num_heads": num_heads,
+        "ff_size": ff_size,
+        "window_stride": window_stride,
+    }
+    net, resume_payload = build_net_for_run(device, save_dir, ckpt_path, architecture, **model_kwargs)
 
     metrics_logger = RunMetricsLogger(save_dir)
     metrics_logger.write_meta(
@@ -579,16 +814,25 @@ def main(
         tensorboard_dir=tensorboard_dir,
         hparams=net._training_hparams(),
     )
+    report = net._model_report()
+    metrics_logger.write_model_report(report, repr(net.rnn))
+    log_print(
+        f"Model: {report['params']:,} param, {report['model_bytes']:,} B, "
+        f"tying={report['weight_tying']}, dtype={report['dtype']}"
+    )
     net.metrics_logger = metrics_logger
 
     writer = SummaryWriter(tensorboard_dir)
     net._log_custom_scalars_layout(writer)
     ckpt_every = int(os.environ.get("LANGUAGE_RNN_CHECKPOINT_EVERY", str(checkpoint_every)))
     sample_every = int(os.environ.get("LANGUAGE_RNN_EVAL_EVERY", str(eval_every)))
+    start_epoch = int(resume_payload["epoch"]) if resume_payload else 0
     try:
+        t_run0 = time.perf_counter()
         optimizer, best_eval_loss = net.trainn(
             net,
             epochs=epochs,
+            batch_size=batch_size,
             writer=writer,
             resume_payload=resume_payload,
             checkpoint_every=ckpt_every,
@@ -596,8 +840,15 @@ def main(
         )
         eval_loss, eval_ppl = net.evall(net, writer=writer, epoch=epochs)
         net.save_final(net, optimizer, epochs, eval_loss, eval_ppl, best_eval_loss)
+        train_total_seconds = time.perf_counter() - t_run0
+        metrics_logger.write_timing(
+            train_total_seconds=train_total_seconds,
+            epochs=epochs,
+            start_epoch=start_epoch,
+        )
+        log_print(f"Czas treningu: {train_total_seconds:.1f}s")
         log_print(f"Best eval loss w runie: {best_eval_loss:.4f} (pliki {architecture}_best_eval.*)")
-        final = net.generate(net, seed="W polskim", length=500, temperature=0.85)
+        final, _stats = net.generate(net, seed="W polskim", length=500, temperature=0.85)
         log_print("--- Ostateczna generacja (wagi final, nie best) ---")
         log_print(final)
     finally:

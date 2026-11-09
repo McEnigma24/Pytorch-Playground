@@ -30,6 +30,8 @@ def build_long_dataframe(run_dirs: list[Path]):
         run_label = f"{architecture} ({run_dir.name})"
         df = pd.DataFrame(rows)
         for col in value_cols:
+            if col not in df.columns:
+                df[col] = float("nan")
             df[col] = pd.to_numeric(df[col], errors="coerce")
         df["epoch"] = pd.to_numeric(df["epoch"], errors="coerce")
         df["run_label"] = run_label

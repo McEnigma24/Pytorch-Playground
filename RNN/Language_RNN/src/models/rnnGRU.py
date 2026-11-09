@@ -14,16 +14,21 @@ class rnnGRU(nn.Module):
     def name() -> str:
         return "rnnGRU"
 
+    @staticmethod
+    def description() -> str:
+        return "Stacked GRU (residual + LayerNorm), 1 krok na pozycję sekwencji."
+
     def __init__(
         self,
         vocab_size: int,
         embed_dim: int,
         hidden_size: int,
         dropout: float = 0.3,
+        num_layers: int = NUM_STACKED_LAYERS,
     ):
         super().__init__()
         self.hidden_size = hidden_size
-        self.num_layers = NUM_STACKED_LAYERS
+        self.num_layers = num_layers
         self.dropout_p = dropout
 
         self.embedding = nn.Embedding(vocab_size, embed_dim)
@@ -35,10 +40,10 @@ class rnnGRU(nn.Module):
 
         self.layers = nn.ModuleList(
             nn.GRU(hidden_size, hidden_size, num_layers=1, batch_first=True)
-            for _ in range(NUM_STACKED_LAYERS)
+            for _ in range(num_layers)
         )
-        self.layer_norms = nn.ModuleList(nn.LayerNorm(hidden_size) for _ in range(NUM_STACKED_LAYERS))
-        self.dropouts = nn.ModuleList(nn.Dropout(dropout) for _ in range(NUM_STACKED_LAYERS))
+        self.layer_norms = nn.ModuleList(nn.LayerNorm(hidden_size) for _ in range(num_layers))
+        self.dropouts = nn.ModuleList(nn.Dropout(dropout) for _ in range(num_layers))
 
         self.fc = nn.Linear(hidden_size, vocab_size)
 

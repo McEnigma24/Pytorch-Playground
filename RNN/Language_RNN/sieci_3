@@ -1,0 +1,17 @@
+2. Architektura "Troszkę lepsza" (Modernized Mini-LLaMA)
+Zamiast wymyślać koło na nowo, zaimplementuj architekturę, która zawiera w sobie ulepszenia z ostatnich 3 lat. To w zasadzie "LLaMA w skali mikro". Skala ta sama (~125M parametrów), ale detale robią kolosalną różnicę w szybkości zbiegania się (konwergencji) i końcowej jakości (tzw. perplexity).
+
+Wprowadź w nim te 3 zmiany względem swojego modelu:
+
+RoPE (Rotary Position Embeddings): Wyrzuć całkowicie pozycjonowanie na wejściu (absolute embeddings). Zamiast tego zaimplementuj RoPE wewnątrz mechanizmu atencji (aplikuje się to na wektorach Query i Key przed mnożeniem). RoPE świetnie radzi sobie z ekstrapolacją na dłuższe sekwencje i sprawia, że sieć lepiej rozumie relatywne odległości między polskimi słowami.
+
+SwiGLU w warstwie Feed-Forward: Zamiast klasycznego przejścia Linear -> GELU -> Linear w bloku FFN, użyj aktywacji SwiGLU. Wymaga to trzech mniejszych macierzy zamiast dwóch dużych, ale przy zachowaniu tej samej liczby parametrów działa zauważalnie lepiej (to sekret siły modeli LLaMA i Mistral).
+
+RMSNorm (Pre-Norm): Zamiast klasycznego LayerNorm (które centruje średnią i dzieli przez wariancję), użyj RMSNorm (które dzieli tylko przez średnią kwadratową, ignorując centrowanie). Jest szybsze obliczeniowo, a aplikowane przed każdym blokiem Atencji i FFN (Pre-Norm) gwarantuje super-stabilne gradienty.
+
+Ta architektura pokaże, ile daje sama nowoczesna "inżynieria" przy tej samej ilości parametrów.
+
+
+
+
+3. Sklonowany Standard z Literatury (Klon GPT-2 Small / GPT-Neo 125M)Aby mieć twardy, niepodważalny baseline z literatury naukowej, sklonuj kropka w kropkę architekturę GPT-2 Small (OpenAI) lub jej nowszego brata GPT-Neo 125M (EleutherAI). Są to referencyjne modele dekoderowe.Oto gotowy przepis na hiperparametry, aby zbudować idealnego klona 125M. Tego nie musisz wymyślać – po prostu wpisujesz w kod:HiperparametrWartość (Klon GPT-2 Small)vocab_size~32 000 (z Twojego tokenizera)max_seq_len1024 lub 2048 (kontekst)d_model (Rozmiar ukryty)768n_layers (Liczba bloków)12 bloków (Attention + FFN)n_heads (Liczba głów)12 głów atencjid_head (Wymiar jednej głowy)64 (bo 768 / 12 = 64)d_ff (Wymiar warstwy FFN)3072 (zawsze 4 * d_model)PozycjonowanieAbsolute Positional Embeddings (wyuczalne, macierz 1024 x 768)AktywacjaNew GELU (aproksymacja używana przez OpenAI)Wagi (Inicjalizacja)Inicjalizacja z rozkładu normalnego (mean=0, std=0.02). Skalowanie wag uciekających (tzw. residual projections) o $1/\sqrt{2 \times n\_layers}$.Liczba parametrów dla klona:Embeddings: 32000 * 768 = ~24.5 MPositional: 1024 * 768 = ~0.8 MJeden blok Transformera: 12 * (768^2) = 7.1 M. Dwanaście bloków to: 12 * 7.1 M = ~85 MRazem: ~110 milionów parametrów. W FP32 zajmie to równiutko ~440 MB.

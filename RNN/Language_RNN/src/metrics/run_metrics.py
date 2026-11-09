@@ -14,10 +14,13 @@ METRICS_COLUMNS = (
     "train_perplexity",
     "eval_loss",
     "eval_perplexity",
+    "train_seconds",
+    "eval_seconds",
 )
 
 METRICS_FILENAME = "metrics.csv"
 META_FILENAME = "run_meta.json"
+SUMMARY_FILENAME = "model_summary.txt"
 
 
 def project_root() -> Path:
@@ -58,6 +61,8 @@ class RunMetricsLogger:
         train_perplexity: float,
         eval_loss: float,
         eval_perplexity: float,
+        train_seconds: float,
+        eval_seconds: float,
     ) -> None:
         row = {
             "epoch": epoch,
@@ -65,6 +70,8 @@ class RunMetricsLogger:
             "train_perplexity": train_perplexity,
             "eval_loss": eval_loss,
             "eval_perplexity": eval_perplexity,
+            "train_seconds": train_seconds,
+            "eval_seconds": eval_seconds,
         }
         write_header = not self.metrics_path.is_file()
         with self.metrics_path.open("a", encoding="utf-8", newline="") as f:
@@ -77,6 +84,50 @@ class RunMetricsLogger:
         if not self.meta_path.is_file():
             return {}
         return json.loads(self.meta_path.read_text(encoding="utf-8"))
+
+    def write_timing(
+        self,
+        *,
+        train_total_seconds: float,
+        epochs: int,
+        start_epoch: int,
+    ) -> None:
+        payload = self.load_meta()
+        if not payload:
+            payload = {"run_id": self.save_dir.name}
+        payload["finished_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+        payload["train_total_seconds"] = train_total_seconds
+        payload["epochs"] = epochs
+        payload["start_epoch"] = start_epoch
+        self.meta_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+    def write_model_report(self, report: dict[str, Any], module_tree: str) -> None:
+        payload = self.load_meta()
+        if not payload:
+            payload = {"run_id": self.save_dir.name}
+        payload["model"] = report
+        self.meta_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        summary_path = self.save_dir / SUMMARY_FILENAME
+        lines = [
+            f"architecture: {report.get('architecture')}",
+            f"description: {report.get('description')}",
+            f"params: {report.get('params'):,}",
+            f"model_bytes: {report.get('model_bytes'):,}",
+            f"dtype: {report.get('dtype')}",
+            f"weight_tying: {report.get('weight_tying')}",
+            "",
+            json.dumps(report, indent=2, ensure_ascii=False),
+            "",
+            "--- module tree ---",
+            module_tree,
+        ]
+        summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def load_run_metrics(save_dir: Path) -> list[dict[str, Any]]:

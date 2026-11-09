@@ -1,0 +1,60 @@
+celujemy mniej więcej w 110 - 115 mil parametrów oraz fp32  czyli   500MB na dysku samych wag
+
+2. Architektura "Heavyweight" (~125M parametrów, ~500MB na dysku)Zakładam, że Twój SentencePiece wygenerował słownik o wielkości około 32 000 (standardowy rozmiar dla modeli Base) lub 50 000 tokenów. Oprzyjmy matematykę na vocab_size = 32000.HiperparametrSugerowana wartośćDlaczego? / Wpływ na parametryembed_size768Identycznie jak w Transformerach klasy Base. Pozwala to na reprezentację tokenów w równie bogatej przestrzeni. Koszt: 32000 * 768 = ~24.5 mln parametrów.hidden_size768 lub 1024Ponieważ mamy BiLSTM, na wyjściu każdej warstwy dostaniemy połączony wektor o rozmiarze 1536 (2 * 768).num_layers3Skoro powiększamy sieć, nie możemy zwiększać tylko jej szerokości. 3 warstwy BiLSTM to dużo (dla RNN), ale konieczne do zgromadzenia parametrów. Między warstwami LSTM obowiązkowo trzeba dać dropout.
+
+
+Jak dobić do 120-125M (aby wyrównać z Transformerem)?
+Musisz zwiększyć parametry komórek LSTM (zrobić je szerszymi).
+Ustaw hidden_size = 1024 (zamiast 768) i embed_size = 1024.
+
+Embedding (32k x 1024) = 32.7 M
+
+BiLSTM 1 (wejście 1024, wyjście 2048) = 16.8 M
+
+BiLSTM 2 i 3 (wejście 2048, wyjście 2048) = 25.2 M x 2 = 50.4 M
+
+Klasyfikator (Pooling 3 x 2048 -> gęsta warstwa np. 1024) = ~6.3 M
+
+Razem: około 106 milionów parametrów.
+
+To da Ci rozmiar pliku tuż powyżej 400 MB w FP32. To perfekcyjny, uczciwy zawodnik w tej wadze.
+
+
+
+
+
+# Wersja Heavyweight
+        # num_layers=3 uaktywnia kolejne warstwy rekurencyjne
+        # dropout=0.3 wewnątrz LSTM nakłada dropout POMIĘDZY warstwami 1-2 i 2-3
+        self.lstm = nn.LSTM(
+            input_size=embed_size,
+            hidden_size=hidden_size,
+            num_layers=3,
+            bidirectional=True,
+            batch_first=True,
+            dropout=0.3
+        )
+
+
+
+
+4. Pułapka uczenia "Grubych" RNN-ów
+Transformery uczą się bardzo stabilnie dzięki Layer Normalization i Residual Connections. Głębokie RNN-y (3 warstwy BiLSTM, 106 mln parametrów) to z kolei "dzikie bestie". Żeby to w ogóle zbiegło (skonwergowało) w trakcie uczenia:
+
+Gradient Clipping (Absolutnie krytyczne): Duże LSTM mają gigantyczną tendencję do eksplodowania gradientów przy uczeniu od zera. W pętli uczącej PyTorcha przed optimizer.step() MUSISZ dodać: torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+Learning Rate: Skoro uczysz Embedding od zera na subwordach BPE, rozważ harmonogram LR (np. Cosine Annealing z Warmupem, taki sam jak dla Transformera).
+
+Dzięki takiemu setupowi (ten sam tokenizer BPE, ta sama liczba parametrów ~100M+), w dyskusji pod wynikami będziesz mógł jednoznacznie stwierdzić: różnica w skuteczności wynika w 100% z architektury (Sekwencyjne przetwarzanie vs mechanizm Self-Attention), a nie z wielkości sieci czy sposobu dzielenia słów!
+
+
+
+Dwie kluczowe rady dla języka polskiego:
+Zamrożenie wektorów (początkowe): Ustaw self.embedding.weight.requires_grad = False na pierwsze kilka epok. Pozwól LSTM nauczyć się klasyfikacji na sztywnych, pre-trenowanych wektorach FastText. Dopiero potem odmroź Embedding i doucz go z małym Learning Rate (tzw. fine-tuning).
+
+Lematyzacja lub Stemming: Ponieważ Transformer używa subwordów (BPE), łatwo radzi sobie z polskimi końcówkami. RNN działa na całych słowach. Aby dać mu rzetelną szansę z małym słownikiem (20-40k), rozważ wrzucenie tekstów do spacy-pl (lub podobnego narzędzia) i zrobienie lematyzacji przed podaniem tekstu do RNN-a (np. "Biegałem" i "Biegałam" -> "biegać"). Zmniejszy to drastycznie liczbę potrzebnych tokenów w słowniku.
+
+
+
+
+

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -18,7 +19,8 @@ from log_print import log_print
 
 SPEAKLEASH_DATASET = "wolne_lektury_corpus"
 CORPUS_FILENAME = "corpus.txt"
-DEFAULT_VOCAB_SIZE = 8_192
+DEFAULT_VOCAB_SIZE = 32_000
+BYTE_VOCAB_RESERVE = 256
 
 
 def package_dir() -> Path:
@@ -92,6 +94,22 @@ def resolve_corpus_path() -> Path:
     return _materialize_corpus(dest)
 
 
+def _inject_byte_tokens_json(tokenizer_json: Path) -> int:
+    """Dopina <0x00>..<0xFF> do model.vocab w tokenizer.json (bez przebudowy merges)."""
+    data = json.loads(tokenizer_json.read_text(encoding="utf-8"))
+    vocab: dict[str, int] = data["model"]["vocab"]
+    next_id = max(vocab.values()) + 1
+    added = 0
+    for i in range(BYTE_VOCAB_RESERVE):
+        tok = f"<0x{i:02x}>"
+        if tok not in vocab:
+            vocab[tok] = next_id
+            next_id += 1
+            added += 1
+    tokenizer_json.write_text(json.dumps(data), encoding="utf-8")
+    return added
+
+
 def load_corpus_text(path: Path | None = None) -> str:
     path = path or resolve_corpus_path()
     text = path.read_text(encoding="utf-8")
@@ -111,21 +129,37 @@ def load_tokenizer(
     tokenizer_json = store / "tokenizer.json"
 
     if tokenizer_json.is_file():
+        tok = PreTrainedTokenizerFast(tokenizer_file=str(tokenizer_json))
+        if tok.vocab_size != vocab_size:
+            log_print(
+                f"UWAGA: tokenizer ma vocab={tok.vocab_size:,}, oczekiwano {vocab_size:,} — "
+                f"usuń {store} i przebuduj BPE"
+            )
         log_print(f"Tokenizer z {store}")
-        return PreTrainedTokenizerFast(tokenizer_file=str(tokenizer_json))
+        return tok
 
-    log_print(f"Trenuję BPE byte_fallback (vocab={vocab_size:,}) na {corpus_path.name}…")
+    merge_vocab = max(vocab_size - BYTE_VOCAB_RESERVE, 512)
+    log_print(
+        f"Trenuję BPE byte_fallback (vocab={vocab_size:,}, merge={merge_vocab:,}) na {corpus_path.name}…"
+    )
     raw = Tokenizer(BPE(unk_token="<unk>", byte_fallback=True))
     raw.normalizer = normalizers.NFC()
     raw.pre_tokenizer = Metaspace()
     raw.decoder = decoders.Sequence([decoders.ByteFallback(), decoders.Metaspace()])
     trainer = BpeTrainer(
-        vocab_size=vocab_size,
+        vocab_size=merge_vocab,
         special_tokens=["<unk>", "<|endoftext|>"],
         show_progress=False,
     )
     raw.train([str(corpus_path)], trainer)
     raw.save(str(tokenizer_json))
+    byte_added = _inject_byte_tokens_json(tokenizer_json)
+    vocab_n = len(json.loads(tokenizer_json.read_text(encoding="utf-8"))["model"]["vocab"])
+    if vocab_n != vocab_size:
+        log_print(
+            f"UWAGA: tokenizer vocab={vocab_n:,} ≠ docelowe {vocab_size:,} "
+            f"(merge={merge_vocab:,}, dopięte bajty={byte_added})"
+        )
 
     tok = PreTrainedTokenizerFast(
         tokenizer_file=str(tokenizer_json),
@@ -145,19 +179,24 @@ def encode_text(text: str, tokenizer: PreTrainedTokenizerFast) -> torch.Tensor:
 class TokenSeqDataset(Dataset):
     """Okno [i : i+seq_len] → predykcja następnego tokenu na każdej pozycji."""
 
-    def __init__(self, encoded: torch.Tensor, seq_len: int):
+    def __init__(self, encoded: torch.Tensor, seq_len: int, stride: int = 1):
         if encoded.ndim != 1:
             raise ValueError("encoded musi być tensorem 1D")
+        if stride < 1:
+            raise ValueError("stride musi być >= 1")
         if len(encoded) <= seq_len:
             raise ValueError("tekst za krótki względem seq_len")
         self.encoded = encoded
         self.seq_len = seq_len
+        self.stride = stride
 
     def __len__(self) -> int:
-        return len(self.encoded) - self.seq_len
+        span = len(self.encoded) - self.seq_len
+        return (span + self.stride - 1) // self.stride
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
-        chunk = self.encoded[index : index + self.seq_len + 1]
+        start = index * self.stride
+        chunk = self.encoded[start : start + self.seq_len + 1]
         x = chunk[:-1]
         y = chunk[1:]
         return x, y
@@ -169,17 +208,22 @@ def split_encoded(encoded: torch.Tensor, train_frac: float = 0.9) -> tuple[torch
     return encoded[:split].clone(), encoded[split:].clone()
 
 
-def prepare_language_data(seq_len: int) -> tuple[TokenSeqDataset, TokenSeqDataset, PreTrainedTokenizerFast, int]:
+def prepare_language_data(
+    seq_len: int,
+    *,
+    window_stride: int = 1,
+) -> tuple[TokenSeqDataset, TokenSeqDataset, PreTrainedTokenizerFast, int]:
     corpus_path = resolve_corpus_path()
     text = load_corpus_text(corpus_path)
     tokenizer = load_tokenizer(corpus_path)
     vocab_size = tokenizer.vocab_size
     encoded = encode_text(text, tokenizer)
     train_enc, val_enc = split_encoded(encoded, train_frac=0.9)
-    train_ds = TokenSeqDataset(train_enc, seq_len)
-    val_ds = TokenSeqDataset(val_enc, seq_len)
+    train_ds = TokenSeqDataset(train_enc, seq_len, stride=window_stride)
+    val_ds = TokenSeqDataset(val_enc, seq_len, stride=window_stride)
     log_print(
         f"Korpus: {SPEAKLEASH_DATASET}, {len(text):,} znaków → {len(encoded):,} tokenów, "
-        f"vocab={vocab_size}, train_windows={len(train_ds):,}, val_windows={len(val_ds):,}"
+        f"vocab={vocab_size}, stride={window_stride}, "
+        f"train_windows={len(train_ds):,}, val_windows={len(val_ds):,}"
     )
     return train_ds, val_ds, tokenizer, vocab_size

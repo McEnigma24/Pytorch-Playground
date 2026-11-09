@@ -15,6 +15,9 @@ saved_models/
 !saved_models/.gitkeep
 checkpoints/
 
+model_evaluations/
+!model_evaluations/.gitkeep
+
 src/text_and_tokenizer/data/tokenizer/
 src/text_and_tokenizer/data/speakleash/
 src/text_and_tokenizer/data/text/corpus.txt
