@@ -2,7 +2,7 @@
 #SBATCH --job-name=lrnn
 #SBATCH --output=logs/lrnn_%A_%a.out
 #SBATCH --error=logs/lrnn_%A_%a.err
-#SBATCH --array=0-8
+#SBATCH --array=0-5
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
@@ -18,8 +18,7 @@ set -euo pipefail
 
 ARCHITECTURES=(
   rnnRNN rnnGRU rnnLSTM
-  rnnBaseLSTM rnnAWDLSTM rnnGoldenLSTM
-  transformer_nanoGPT transformer_miniLLaMA transformer_GPT2small
+  rnnAWDLSTM rnnBaseLSTM rnnGoldenLSTM
 )
 ARCH="${ARCHITECTURES[$SLURM_ARRAY_TASK_ID]}"
 
@@ -36,5 +35,5 @@ echo "Job $SLURM_JOB_ID task $SLURM_ARRAY_TASK_ID → $ARCH"
 
 uv run python scripts/plgrid/run_train.py \
   --architecture "$ARCH" \
-  --preset auto \
+  --preset test125M_1ep \
   --tensorboard-root "$TENSORBOARD_LOGDIR"

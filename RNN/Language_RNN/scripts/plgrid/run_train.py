@@ -55,6 +55,20 @@ PRESETS: dict[str, dict] = {
         window_stride=1024,
         batch_size=32,
     ),
+    # Jedna epoka — test na PL Grid (jak ręczne wywołania w src/main.py).
+    "test125M_1ep": dict(
+        epochs=1,
+        run_tag="125M",
+        eval_every=5,
+        checkpoint_every=5,
+        embed_dim=1536,
+        hidden_size=1536,
+        num_layers=4,
+        dropout=0.3,
+        seq_len=1024,
+        window_stride=1024,
+        batch_size=32,
+    ),
     "grid110M_gpt2": dict(
         epochs=10,
         run_tag="110M",
