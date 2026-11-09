@@ -7,6 +7,7 @@
   --accent: #2563eb;
   --border: #ddd;
   --highlight: rgba(255, 235, 59, 0.45);
+  --danger: #dc2626;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -30,8 +31,12 @@ body {
   color: var(--text);
 }
 
+::highlight(tts-line) {
+  background-color: rgba(37, 99, 235, 0.12);
+}
+
 ::highlight(tts-word) {
-  background-color: var(--highlight);
+  background-color: rgba(255, 193, 7, 0.55);
 }
 
 .top-bar {
@@ -78,6 +83,17 @@ body {
   color: var(--accent);
 }
 
+.btn.danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.btn.sm {
+  padding: 0.3rem 0.6rem;
+  font-size: 0.85rem;
+}
+
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -93,18 +109,20 @@ body {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 1rem;
-  cursor: pointer;
   text-align: left;
   width: 100%;
-}
-
-.card:hover {
-  border-color: var(--accent);
 }
 
 .card h2 {
   margin: 0 0 0.35rem;
   font-size: 1.05rem;
+}
+
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.65rem;
 }
 
 .meta {
@@ -114,6 +132,8 @@ body {
 
 .status-ready { color: #16a34a; }
 .status-processing, .status-queued { color: #ca8a04; }
+.status-draft, .status-uploaded { color: #2563eb; }
+.status-paused { color: #9333ea; }
 .status-error { color: #dc2626; }
 
 .form-panel {
@@ -125,6 +145,36 @@ body {
   gap: 0.75rem;
 }
 
+fieldset {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem;
+  margin: 0;
+}
+
+fieldset legend {
+  padding: 0 0.35rem;
+  font-size: 0.9rem;
+}
+
+.filter-grid {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.filter-grid label {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  font-size: 0.9rem;
+}
+
+.row-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
 label {
   display: grid;
   gap: 0.35rem;
@@ -132,6 +182,7 @@ label {
 }
 
 input[type="text"],
+input[type="number"],
 input[type="file"],
 textarea,
 select {
@@ -143,9 +194,16 @@ select {
   font: inherit;
 }
 
-textarea {
-  min-height: 120px;
+textarea.editor {
+  min-height: 280px;
   resize: vertical;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+textarea.readonly-hint {
+  opacity: 0.85;
 }
 
 .reader-toolbar {
@@ -191,19 +249,12 @@ textarea {
 }
 
 .pdf-page .textLayer {
-  position: absolute;
-  inset: 0;
-  line-height: 1;
-  overflow: hidden;
   opacity: 1;
 }
 
 .pdf-page .textLayer span {
   color: transparent;
   cursor: pointer;
-  position: absolute;
-  white-space: pre;
-  transform-origin: 0 0;
 }
 
 .pdf-page .textLayer span:hover {
@@ -221,4 +272,41 @@ textarea {
   border-radius: 8px;
   background: var(--card);
   border: 1px solid var(--border);
+}
+
+.message[role="status"] {
+  min-height: 1.25rem;
+}
+
+.mono {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+}
+
+.section-title {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.progress-wrap {
+  height: 6px;
+  margin-top: 0.5rem;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.35s ease;
+}
+
+.reader-rate {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }

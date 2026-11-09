@@ -1,12 +1,12 @@
-"""Korpus Pan Tadeusz, tokenizer BPE (Unicode + byte_fallback) i Dataset sekwencji tokenów."""
+"""Korpus Speakleash, tokenizer BPE (Unicode + byte_fallback) i Dataset sekwencji tokenów."""
 
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
 import torch
+from speakleash import Speakleash
 from torch.utils.data import Dataset
 from tokenizers import Tokenizer, decoders, normalizers
 from tokenizers.models import BPE
@@ -16,7 +16,8 @@ from transformers import PreTrainedTokenizerFast
 
 from log_print import log_print
 
-CORPUS_FILENAME = "pan-tadeusz.txt"
+SPEAKLEASH_DATASET = "wolne_lektury_corpus"
+CORPUS_FILENAME = "corpus.txt"
 DEFAULT_VOCAB_SIZE = 8_192
 
 
@@ -39,6 +40,10 @@ def text_dir() -> Path:
     return data_dir() / "text"
 
 
+def speakleash_dir() -> Path:
+    return data_dir() / "speakleash"
+
+
 def tokenizer_dir() -> Path:
     env = os.environ.get("LANGUAGE_RNN_TOKENIZER_DIR")
     if env:
@@ -50,45 +55,41 @@ def default_corpus_path() -> Path:
     return text_dir() / CORPUS_FILENAME
 
 
-def _legacy_corpus_sources() -> list[Path]:
-    root = project_root()
-    return [
-        root / "data" / CORPUS_FILENAME,
-        root / "data" / "pan_tadeusz.txt",
-    ]
-
-
-def _ensure_corpus_file() -> Path:
-    dest = default_corpus_path()
-    if dest.is_file() and dest.stat().st_size > 10_000:
-        return dest
-
+def _materialize_corpus(dest: Path) -> Path:
     text_dir().mkdir(parents=True, exist_ok=True)
-    for src in _legacy_corpus_sources():
-        if src.is_file() and src.stat().st_size > 10_000:
-            shutil.copy2(src, dest)
-            log_print(f"Skopiowano korpus → {dest}")
-            return dest
+    store = speakleash_dir()
+    store.mkdir(parents=True, exist_ok=True)
+    log_print(f"Speakleash: {SPEAKLEASH_DATASET} → {dest}")
+    sl = Speakleash(replicate_dir=str(store))
+    ds = sl.get(SPEAKLEASH_DATASET)
+    if ds is None:
+        raise RuntimeError(f"Brak datasetu Speakleash: {SPEAKLEASH_DATASET!r}")
+    stream = ds.data
+    if stream is None:
+        raise RuntimeError(f"Nie udało się pobrać Speakleash/{SPEAKLEASH_DATASET}")
 
-    raise FileNotFoundError(
-        f"Brak korpusu: umieść {CORPUS_FILENAME} w {text_dir()} "
-        f"lub ustaw LANGUAGE_RNN_CORPUS"
+    doc_count = 0
+    with dest.open("w", encoding="utf-8") as out:
+        for doc in stream:
+            if not doc:
+                continue
+            doc = doc.replace("\r\n", "\n").replace("\r", "\n")
+            out.write(doc)
+            out.write("\n\n")
+            doc_count += 1
+
+    size = dest.stat().st_size
+    log_print(
+        f"Korpus: {doc_count:,} dokumentów, {size:,} B ({SPEAKLEASH_DATASET})"
     )
+    return dest
 
 
 def resolve_corpus_path() -> Path:
-    env = os.environ.get("LANGUAGE_RNN_CORPUS")
-    if env:
-        path = Path(env)
-        if path.is_file():
-            return path
-        raise FileNotFoundError(f"LANGUAGE_RNN_CORPUS nie istnieje: {path}")
-    return _ensure_corpus_file()
-
-
-def ensure_pan_tadeusz() -> Path:
-    """Zachowane dla kompatybilności — zwraca ścieżkę do korpusu."""
-    return resolve_corpus_path()
+    dest = default_corpus_path()
+    if dest.is_file() and dest.stat().st_size > 10_000:
+        return dest
+    return _materialize_corpus(dest)
 
 
 def load_corpus_text(path: Path | None = None) -> str:
@@ -117,7 +118,7 @@ def load_tokenizer(
     raw = Tokenizer(BPE(unk_token="<unk>", byte_fallback=True))
     raw.normalizer = normalizers.NFC()
     raw.pre_tokenizer = Metaspace()
-    raw.decoder = decoders.Sequence([decoders.ByteFallback(), decoders.Fuse()])
+    raw.decoder = decoders.Sequence([decoders.ByteFallback(), decoders.Metaspace()])
     trainer = BpeTrainer(
         vocab_size=vocab_size,
         special_tokens=["<unk>", "<|endoftext|>"],
@@ -178,7 +179,7 @@ def prepare_language_data(seq_len: int) -> tuple[TokenSeqDataset, TokenSeqDatase
     train_ds = TokenSeqDataset(train_enc, seq_len)
     val_ds = TokenSeqDataset(val_enc, seq_len)
     log_print(
-        f"Korpus: {corpus_path.name}, {len(text):,} znaków → {len(encoded):,} tokenów, "
+        f"Korpus: {SPEAKLEASH_DATASET}, {len(text):,} znaków → {len(encoded):,} tokenów, "
         f"vocab={vocab_size}, train_windows={len(train_ds):,}, val_windows={len(val_ds):,}"
     )
     return train_ds, val_ds, tokenizer, vocab_size

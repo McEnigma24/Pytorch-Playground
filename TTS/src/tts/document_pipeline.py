@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +26,26 @@ from tts.infer_Qwen_3_tts import (
 CHUNK_TARGET_CHARS = 500
 INTER_CHUNK_SILENCE_SEC = 0.15
 DEFAULT_MODEL = "1.7b-custom-voice"
+TTS_TEMPERATURE = 0.7
+
+_INSTRUCT_BY_LANG: dict[str, str] = {
+    "English": (
+        "Read in a calm, steady, normal pace like an audiobook narrator. "
+        "Keep the same speaking speed throughout."
+    ),
+    "Polish": (
+        "Czytaj spokojnym, równym, normalnym tempem jak lektor audiobooka. "
+        "Zachowaj to samo tempo przez cały fragment."
+    ),
+}
+
+
+def instruct_for_language(language: str) -> str:
+    return _INSTRUCT_BY_LANG.get(language, _INSTRUCT_BY_LANG["English"])
+
+
+class StopRequested(Exception):
+    """Raised when should_stop() returns True before processing a chunk."""
 
 
 @dataclass(frozen=True)
@@ -80,6 +102,52 @@ def write_webvtt_word_aligned(path: Path, items: list[ForcedAlignItem]) -> None:
     path.write_text("\n".join(chunks), encoding="utf-8")
 
 
+def _chunk_cache_paths(cache_dir: Path, idx: int) -> tuple[Path, Path]:
+    stem = f"{idx:04d}"
+    return cache_dir / f"{stem}.wav", cache_dir / f"{stem}.json"
+
+
+def _load_cached_chunk(
+    wav_path: Path, meta_path: Path
+) -> tuple[np.ndarray, int, list[ForcedAlignItem]] | None:
+    if not wav_path.is_file() or not meta_path.is_file():
+        return None
+    try:
+        wav, sr = sf.read(wav_path, dtype="float32")
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        items = [
+            ForcedAlignItem(
+                text=w["text"],
+                start_time=w["start_time"],
+                end_time=w["end_time"],
+            )
+            for w in payload["items"]
+        ]
+        return np.asarray(wav, dtype=np.float32), int(sr), items
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        return None
+
+
+def _save_cached_chunk(
+    wav_path: Path,
+    meta_path: Path,
+    wav: np.ndarray,
+    sr: int,
+    items: list[ForcedAlignItem],
+) -> None:
+    wav_path.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(wav_path, wav, sr)
+    payload = {
+        "items": [
+            {"text": w.text, "start_time": w.start_time, "end_time": w.end_time}
+            for w in items
+            if w.text.strip()
+        ],
+        "sample_rate": sr,
+    }
+    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+
+
 def process_document(
     text: str,
     out_wav: Path,
@@ -91,6 +159,9 @@ def process_document(
     qwen_model: Qwen3TTSModel | None = None,
     forced_aligner: Qwen3ForcedAligner | None = None,
     on_progress: Callable[[int, int], None] | None = None,
+    on_chunk_done: Callable[[int, int, int, float, bool], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+    cache_dir: Path | None = None,
 ) -> PipelineResult:
     text = text.strip()
     if not text:
@@ -115,6 +186,8 @@ def process_document(
         speaker = speakers[0]
 
     use_cuda = torch.cuda.is_available()
+    if cache_dir:
+        cache_dir.mkdir(parents=True, exist_ok=True)
 
     all_audio: list[np.ndarray] = []
     all_items: list[ForcedAlignItem] = []
@@ -122,37 +195,65 @@ def process_document(
     sr: int | None = None
 
     for idx, chunk in enumerate(chunks):
+        if should_stop and should_stop():
+            raise StopRequested()
+
         if on_progress:
             on_progress(idx + 1, len(chunks))
 
-        if use_cuda:
-            torch.cuda.synchronize()
+        wav_path = meta_path = None
+        if cache_dir:
+            wav_path, meta_path = _chunk_cache_paths(cache_dir, idx)
+            cached = _load_cached_chunk(wav_path, meta_path)
+        else:
+            cached = None
 
-        wavs, sample_rate = qwen_model.generate_custom_voice(
-            text=chunk,
-            language=language,
-            speaker=speaker,
-        )
-        wav = np.asarray(wavs[0], dtype=np.float32)
-        sr = sample_rate
+        from_cache = cached is not None
+        elapsed_sec = 0.0
 
-        if use_cuda:
-            torch.cuda.synchronize()
+        if cached is not None:
+            wav, sample_rate, items = cached
+        else:
+            if use_cuda:
+                torch.cuda.synchronize()
 
-        t_align = time.perf_counter()
-        align_results = forced_aligner.align(
-            audio=(wav, sample_rate),
-            text=chunk,
-            language=language,
-        )
-        if use_cuda:
-            torch.cuda.synchronize()
-        del t_align
+            t0 = time.perf_counter()
+            wavs, sample_rate = qwen_model.generate_custom_voice(
+                text=chunk,
+                language=language,
+                speaker=speaker,
+                instruct=instruct_for_language(language),
+                temperature=TTS_TEMPERATURE,
+                subtalker_temperature=TTS_TEMPERATURE,
+            )
+            wav = np.asarray(wavs[0], dtype=np.float32)
 
-        items = align_results[0].items
+            if use_cuda:
+                torch.cuda.synchronize()
+
+            align_results = forced_aligner.align(
+                audio=(wav, sample_rate),
+                text=chunk,
+                language=language,
+            )
+            if use_cuda:
+                torch.cuda.synchronize()
+            elapsed_sec = time.perf_counter() - t0
+
+            items = [w for w in align_results[0].items if w.text.strip()]
+
+            if cache_dir and wav_path is not None and meta_path is not None:
+                _save_cached_chunk(wav_path, meta_path, wav, sample_rate, items)
+
+        if on_chunk_done:
+            on_chunk_done(idx + 1, len(chunks), len(chunk), elapsed_sec, from_cache)
+
+        if sr is None:
+            sr = sample_rate
+        elif sample_rate != sr:
+            raise ValueError(f"Sample rate mismatch: {sample_rate} vs {sr}")
+
         for item in items:
-            if not item.text.strip():
-                continue
             all_items.append(
                 ForcedAlignItem(
                     text=item.text,
@@ -177,6 +278,9 @@ def process_document(
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     sf.write(out_wav, merged, sr)
     write_webvtt_word_aligned(out_vtt, all_items)
+
+    if cache_dir and cache_dir.is_dir():
+        shutil.rmtree(cache_dir)
 
     return PipelineResult(
         wav_path=out_wav,

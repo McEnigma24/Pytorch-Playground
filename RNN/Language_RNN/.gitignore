@@ -16,3 +16,5 @@ saved_models/
 checkpoints/
 
 src/text_and_tokenizer/data/tokenizer/
+src/text_and_tokenizer/data/speakleash/
+src/text_and_tokenizer/data/text/corpus.txt

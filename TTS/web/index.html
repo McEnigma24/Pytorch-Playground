@@ -4,6 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Czytnik PDF + TTS</title>
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/web/pdf_viewer.css"
+  >
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -11,12 +15,12 @@
     <h1>Czytnik PDF + TTS</h1>
     <nav class="nav-actions">
       <button type="button" id="btn-home" class="btn ghost">Materiały</button>
-      <button type="button" id="btn-upload" class="btn">Nowy materiał</button>
+      <button type="button" id="btn-new" class="btn">Nowy materiał</button>
     </nav>
   </header>
 
   <main id="app"></main>
 
-  <script type="module" src="/app.js"></script>
+  <script type="module" src="/app.js?v=5"></script>
 </body>
 </html>

@@ -402,7 +402,7 @@ class LanguageModelNet(nn.Module):
                 self.save_checkpoint(model, optimizer, epoch + 1, eval_loss, eval_ppl, best_eval_loss)
 
             if epoch % eval_every == 0 or epoch == epochs - 1:
-                sample = self.generate(model, seed="Litwo", length=200, temperature=0.8)
+                sample = self.generate(model, seed="W", length=200, temperature=0.8)
                 log_print(f"Generacja (200 tok.): {sample[:200]!r}")
 
         return optimizer, best_eval_loss
@@ -448,7 +448,7 @@ class LanguageModelNet(nn.Module):
     def generate(
         self,
         model: LanguageModelNet,
-        seed: str = "Litwo",
+        seed: str = "W",
         length: int = 400,
         temperature: float = 1.0,
     ) -> str:
@@ -597,7 +597,7 @@ def main(
         eval_loss, eval_ppl = net.evall(net, writer=writer, epoch=epochs)
         net.save_final(net, optimizer, epochs, eval_loss, eval_ppl, best_eval_loss)
         log_print(f"Best eval loss w runie: {best_eval_loss:.4f} (pliki {architecture}_best_eval.*)")
-        final = net.generate(net, seed="Litwo, Ojczyzno moja!", length=500, temperature=0.85)
+        final = net.generate(net, seed="W polskim", length=500, temperature=0.85)
         log_print("--- Ostateczna generacja (wagi final, nie best) ---")
         log_print(final)
     finally:

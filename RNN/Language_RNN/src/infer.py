@@ -54,7 +54,7 @@ def load_for_inference(
 def main(
     *,
     architecture: str,
-    seed: str = "Litwo, Ojczyzno moja!",
+    seed: str = "W polskim",
     length: int = 500,
     temperature: float = 0.85,
     checkpoint_path: Path | str | None = None,

@@ -1,4 +1,4 @@
-"""Tekst treningowy i tokenizer — artefakty w data/text i data/tokenizer."""
+"""Speakleash → korpus, tokenizer — artefakty w data/text, data/speakleash, data/tokenizer."""
 
 from text_and_tokenizer.text_data import (
     TokenSeqDataset,

@@ -10,7 +10,7 @@ import old_stuff
 import train
 from log_print import log_print, reset_log_timer, tensorboard_run_dir
 
-# experiment = "mnist"
+# experiment = "simple_mlp"
 
 # experiment = "rnnRNN"
 experiment = "rnnLSTM"
@@ -47,7 +47,7 @@ if __name__ == "__main__":
     if default_run == True:
         match experiment:
 
-            case "mnist":
+            case "simple_mlp":
                 old_stuff.main(tensorboard_dir=run_dir)
 
             case "rnnLSTM" | "rnnGRU" | "rnnRNN":
@@ -83,4 +83,6 @@ if __name__ == "__main__":
                 checkpoint_path="saved_models/rnnGRU-2026.11.01-014552-quick-test/rnnGRU_final.pt",
                 length=length,
     )
+
+
 
