@@ -62,6 +62,28 @@ TRANSFORMER_ARCHITECTURES = frozenset(
     {"transformer_nanoGPT", "transformer_miniLLaMA", "transformer_GPT2small"}
 )
 
+
+def _fmt_duration(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    if seconds < 3600:
+        return f"{seconds / 60:.1f} min"
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    return f"{hours} h {minutes} min"
+
+
+def _log_eta_from_first_batch(*, phase: str, batch_seconds: float, n_batches: int) -> None:
+    if n_batches <= 1 or batch_seconds <= 0:
+        return
+    est_total = batch_seconds * n_batches
+    log_print(
+        f"  szac. {phase}: ~{_fmt_duration(est_total)} "
+        f"(1. batch {batch_seconds:.2f}s × {n_batches:,} batchy)"
+    )
+
+
 def _default_num_layers(architecture: str) -> int:
     match architecture:
         case "rnnBaseLSTM" | "rnnAWDLSTM":
@@ -248,8 +270,11 @@ class LanguageModelNet(nn.Module):
         model.eval()
         running_loss = torch.zeros((), device=self.device)
         total_targets = 0
+        n_batches = len(val_loader)
+        batch_idx = 0
         with torch.no_grad():
             for x, y in val_loader:
+                t_batch0 = time.perf_counter()
                 x = x.to(self.device, non_blocking=True)
                 y = y.to(self.device, non_blocking=True)
                 batch_n = x.size(0)
@@ -259,6 +284,14 @@ class LanguageModelNet(nn.Module):
                 n_targets = y.numel()
                 running_loss += loss * n_targets
                 total_targets += n_targets
+                _sync_device(self.device)
+                batch_idx += 1
+                if batch_idx == 1:
+                    _log_eta_from_first_batch(
+                        phase="walidacja",
+                        batch_seconds=time.perf_counter() - t_batch0,
+                        n_batches=n_batches,
+                    )
 
         if total_targets:
             avg_loss = (running_loss / total_targets).item()
@@ -498,8 +531,11 @@ class LanguageModelNet(nn.Module):
             model.train()
             running_loss = torch.zeros((), device=self.device)
             total_targets = 0
+            n_batches = len(train_loader)
+            batch_idx = 0
 
             for x, y in train_loader:
+                t_batch0 = time.perf_counter()
                 x = x.to(self.device, non_blocking=True)
                 y = y.to(self.device, non_blocking=True)
                 batch_n = x.size(0)
@@ -515,6 +551,14 @@ class LanguageModelNet(nn.Module):
                 n_targets = y.numel()
                 running_loss += loss.detach() * n_targets
                 total_targets += n_targets
+                _sync_device(self.device)
+                batch_idx += 1
+                if batch_idx == 1:
+                    _log_eta_from_first_batch(
+                        phase="trening epoki",
+                        batch_seconds=time.perf_counter() - t_batch0,
+                        n_batches=n_batches,
+                    )
 
             avg_loss = (running_loss / total_targets).item()
             train_seconds = time.perf_counter() - t_train0
