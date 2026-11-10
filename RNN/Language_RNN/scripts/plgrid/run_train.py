@@ -116,8 +116,22 @@ PRESETS: dict[str, dict] = {
     ),
 }
 
-
 def preset_for(architecture: str, name: str) -> dict:
+    if name == "local6G":
+        from training_presets import (
+            LOCAL6G_AWD,
+            LOCAL6G_LLAMA,
+            LOCAL_BEST_LSTM,
+            LOCAL_BEST_TRANSFORMER,
+        )
+
+        if architecture == LOCAL_BEST_LSTM:
+            return dict(LOCAL6G_AWD)
+        if architecture == LOCAL_BEST_TRANSFORMER:
+            return dict(LOCAL6G_LLAMA)
+        raise ValueError(
+            f"preset local6G: użyj {LOCAL_BEST_LSTM!r} lub {LOCAL_BEST_TRANSFORMER!r}, nie {architecture!r}"
+        )
     if name != "auto":
         return dict(PRESETS[name])
     if architecture.startswith("transformer_GPT2small"):
@@ -135,8 +149,8 @@ def main() -> None:
     parser.add_argument(
         "--preset",
         default="auto",
-        choices=["auto", *PRESETS],
-        help="auto: 125M RNN / 110M transformer wg architektury",
+        choices=["auto", "local6G", *PRESETS],
+        help="auto: grid 125M/110M; local6G: AWD-LSTM + mini-LLaMA pod ~6 GB",
     )
     parser.add_argument("--tensorboard-root", default=os.environ.get("TENSORBOARD_LOGDIR", "/tmp/lrnn_runs"))
     parser.add_argument("--epochs", type=int, default=None)

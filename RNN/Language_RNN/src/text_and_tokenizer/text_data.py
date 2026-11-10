@@ -110,10 +110,26 @@ def _inject_byte_tokens_json(tokenizer_json: Path) -> int:
     return added
 
 
+def _apply_corpus_char_limit(text: str) -> str:
+    raw = os.environ.get("LANGUAGE_RNN_MAX_CORPUS_CHARS", "").strip()
+    if not raw:
+        return text
+    limit = int(raw)
+    if len(text) <= limit:
+        return text
+    log_print(
+        f"Obcinam korpus: {len(text):,} → {limit:,} znaków (LANGUAGE_RNN_MAX_CORPUS_CHARS)"
+    )
+    return text[:limit]
+
+
 def load_corpus_text(path: Path | None = None) -> str:
     path = path or resolve_corpus_path()
+    log_print(f"Wczytuję korpus {path.name}…")
     text = path.read_text(encoding="utf-8")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = _apply_corpus_char_limit(text)
+    log_print(f"Korpus w pamięci: {len(text):,} znaków")
     return text
 
 
@@ -122,7 +138,6 @@ def load_tokenizer(
     vocab_size: int | None = None,
 ) -> PreTrainedTokenizerFast:
     """NFC + Metaspace, BPE z byte_fallback — zapis w data/tokenizer/."""
-    corpus_path = corpus_path or resolve_corpus_path()
     vocab_size = vocab_size or int(os.environ.get("LANGUAGE_RNN_VOCAB_SIZE", DEFAULT_VOCAB_SIZE))
     store = tokenizer_dir()
     store.mkdir(parents=True, exist_ok=True)
@@ -138,6 +153,7 @@ def load_tokenizer(
         log_print(f"Tokenizer z {store}")
         return tok
 
+    corpus_path = corpus_path or resolve_corpus_path()
     merge_vocab = max(vocab_size - BYTE_VOCAB_RESERVE, 512)
     log_print(
         f"Trenuję BPE byte_fallback (vocab={vocab_size:,}, merge={merge_vocab:,}) na {corpus_path.name}…"
@@ -172,7 +188,18 @@ def load_tokenizer(
 
 
 def encode_text(text: str, tokenizer: PreTrainedTokenizerFast) -> torch.Tensor:
-    ids = tokenizer.encode(text, add_special_tokens=False)
+    chunk_chars = int(os.environ.get("LANGUAGE_RNN_ENCODE_CHUNK_CHARS", "2_000_000").replace("_", ""))
+    if len(text) <= chunk_chars:
+        ids = tokenizer.encode(text, add_special_tokens=False)
+        return torch.tensor(ids, dtype=torch.long)
+
+    log_print(f"Tokenizuję korpus w blokach po {chunk_chars:,} znaków…")
+    ids: list[int] = []
+    for start in range(0, len(text), chunk_chars):
+        part = text[start : start + chunk_chars]
+        ids.extend(tokenizer.encode(part, add_special_tokens=False))
+        if start == 0 or (start // chunk_chars) % 5 == 0:
+            log_print(f"  …{min(start + chunk_chars, len(text)):,}/{len(text):,} znaków → {len(ids):,} tokenów")
     return torch.tensor(ids, dtype=torch.long)
 
 
@@ -217,12 +244,15 @@ def prepare_language_data(
     text = load_corpus_text(corpus_path)
     tokenizer = load_tokenizer(corpus_path)
     vocab_size = tokenizer.vocab_size
+    log_print("Koduję tekst na id tokenów (może chwilę potrwać)…")
+    n_chars = len(text)
     encoded = encode_text(text, tokenizer)
+    del text
     train_enc, val_enc = split_encoded(encoded, train_frac=0.9)
     train_ds = TokenSeqDataset(train_enc, seq_len, stride=window_stride)
     val_ds = TokenSeqDataset(val_enc, seq_len, stride=window_stride)
     log_print(
-        f"Korpus: {SPEAKLEASH_DATASET}, {len(text):,} znaków → {len(encoded):,} tokenów, "
+        f"Korpus: {SPEAKLEASH_DATASET}, {n_chars:,} znaków → {len(encoded):,} tokenów, "
         f"vocab={vocab_size}, stride={window_stride}, "
         f"train_windows={len(train_ds):,}, val_windows={len(val_ds):,}"
     )

@@ -24,7 +24,8 @@ from models.rnnRNN import rnnRNN
 from models.transformer_GPT2small import transformer_GPT2small
 from models.transformer_miniLLaMA import transformer_miniLLaMA
 from models.transformer_nanoGPT import transformer_nanoGPT
-from text_and_tokenizer import prepare_language_data, tokenizer_dir
+from text_and_tokenizer import load_tokenizer, prepare_language_data, tokenizer_dir
+from metrics.plot_training import plot_training_run
 from metrics.run_metrics import RunMetricsLogger
 from log_print import log_print, tensorboard_run_dir
 
@@ -134,6 +135,7 @@ class LanguageModelNet(nn.Module):
         num_heads: int | None = None,
         ff_size: int | None = None,
         window_stride: int = 1,
+        prepare_data: bool = True,
     ):
         super().__init__()
 
@@ -149,9 +151,14 @@ class LanguageModelNet(nn.Module):
         self.model_name = architecture
         self.save_dir = Path(save_dir) if save_dir is not None else None
         self.metrics_logger: RunMetricsLogger | None = None
+        self.train_ds = None
+        self.val_ds = None
 
-        # Datasets #
-        self.dataset_prep()
+        # Datasets (trening) albo sam tokenizer (inferencja) #
+        if prepare_data:
+            self.dataset_prep()
+        else:
+            self.tokenizer_prep()
 
         # Compute ENV #
         self.device = resolve_device(device)
@@ -211,6 +218,11 @@ class LanguageModelNet(nn.Module):
         if self.architecture in TRANSFORMER_ARCHITECTURES:
             return self.rnn(x, hidden, pos_start=pos_start)
         return self.rnn(x, hidden)
+
+    def tokenizer_prep(self) -> None:
+        """Wczytuje gotowy BPE — bez korpusu i datasetów (inferencja / load_checkpoint)."""
+        self.tokenizer = load_tokenizer()
+        self.vocab_size = self.tokenizer.vocab_size
 
     def dataset_prep(self) -> None:
         self.train_ds, self.val_ds, self.tokenizer, self.vocab_size = prepare_language_data(
@@ -692,7 +704,13 @@ class LanguageModelNet(nn.Module):
         return text, stats
 
 
-def _net_from_hparams(hp: dict, device: torch.device, save_dir: Path) -> LanguageModelNet:
+def _net_from_hparams(
+    hp: dict,
+    device: torch.device,
+    save_dir: Path,
+    *,
+    prepare_data: bool = True,
+) -> LanguageModelNet:
     architecture = hp.get("architecture") or hp.get("model_name")
     if not architecture:
         raise ValueError("checkpoint hparams bez architecture / model_name")
@@ -708,6 +726,7 @@ def _net_from_hparams(hp: dict, device: torch.device, save_dir: Path) -> Languag
         num_heads=hp.get("num_heads"),
         ff_size=hp.get("ff_size"),
         window_stride=hp.get("window_stride", 1),
+        prepare_data=prepare_data,
     )
     net.model_name = hp.get("model_name", architecture)
     net.save_dir = save_dir
@@ -726,7 +745,7 @@ def load_checkpoint(
     hp = payload["hparams"]
     dev = resolve_device(device)
     resolved_save = Path(save_dir) if save_dir is not None else checkpoint_run_dir(path)
-    net = _net_from_hparams(hp, dev, resolved_save)
+    net = _net_from_hparams(hp, dev, resolved_save, prepare_data=False)
     if net.vocab_size != hp.get("vocab_size", net.vocab_size):
         raise RuntimeError(
             f"vocab checkpoint ({hp.get('vocab_size')}) ≠ tokenizer ({net.vocab_size}) — "
@@ -846,6 +865,7 @@ def main(
             epochs=epochs,
             start_epoch=start_epoch,
         )
+        plot_training_run(save_dir)
         log_print(f"Czas treningu: {train_total_seconds:.1f}s")
         log_print(f"Best eval loss w runie: {best_eval_loss:.4f} (pliki {architecture}_best_eval.*)")
         final, _stats = net.generate(net, seed="W polskim", length=500, temperature=0.85)

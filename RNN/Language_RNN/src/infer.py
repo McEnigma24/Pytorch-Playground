@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import os
+import statistics
 from datetime import datetime, timezone
 from pathlib import Path
 
 from metrics.infer_metrics import (
     INFERENCE_FILENAME,
-    REPORT_FILENAME,
     append_inference_rows,
-    write_inference_report,
+    write_inference_reports,
 )
+from metrics.plot_inference import plot_inference_eval
 from text_and_tokenizer import load_tokenizer, tokenizer_dir
 from train import (
     _run_tag_suffix,
@@ -54,6 +56,120 @@ def _warmup(net, *, length: int = 8) -> None:
     net.generate(net, seed=".", length=length, temperature=1.0, measure=False)
 
 
+def _bench_config() -> tuple[int, int, float]:
+    repeats = int(os.environ.get("LANGUAGE_RNN_BENCH_REPEATS", "10"))
+    repeats = max(repeats, 10)
+    discard_first = int(os.environ.get("LANGUAGE_RNN_BENCH_DISCARD_FIRST", "2"))
+    iqr_mult = float(os.environ.get("LANGUAGE_RNN_BENCH_IQR_MULT", "1.5"))
+    return repeats, discard_first, iqr_mult
+
+
+def _is_finite(value: object) -> bool:
+    if value is None:
+        return False
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return False
+    return v == v
+
+
+def _robust_mean_stats(
+    samples: list[float],
+    *,
+    discard_first: int,
+    iqr_mult: float = 1.5,
+) -> tuple[float, int, float]:
+    """Średnia po odrzuceniu pierwszych próbek i outlierów (IQR)."""
+    samples = [float(x) for x in samples if _is_finite(x)]
+    if not samples:
+        return float("nan"), 0, float("nan")
+    rest = list(samples[discard_first:]) if discard_first < len(samples) else [samples[-1]]
+    if len(rest) >= 4:
+        sorted_rest = sorted(rest)
+        n = len(sorted_rest)
+        q1 = sorted_rest[n // 4]
+        q3 = sorted_rest[(3 * n) // 4]
+        if q3 > q1:
+            iqr = q3 - q1
+            lo = q1 - iqr_mult * iqr
+            hi = q3 + iqr_mult * iqr
+            kept = [x for x in rest if lo <= x <= hi]
+        else:
+            kept = rest
+    else:
+        kept = rest
+    if not kept:
+        kept = rest
+    mean = statistics.mean(kept)
+    std = statistics.stdev(kept) if len(kept) > 1 else 0.0
+    return mean, len(kept), std
+
+
+def _generate_with_bench_tps(
+    net,
+    *,
+    prompt: str,
+    length: int,
+    temperature: float,
+) -> tuple[str, dict]:
+    """Wielokrotna generacja: średnia tok/s i perplexity (IQR + odrzut początkowych runów)."""
+    repeats, discard_first, iqr_mult = _bench_config()
+
+    net.generate(
+        net,
+        seed=prompt,
+        length=min(length, 24),
+        temperature=temperature,
+        measure=False,
+    )
+
+    text = ""
+    runs: list[dict] = []
+    for i in range(repeats):
+        t, s = net.generate(
+            net, seed=prompt, length=length, temperature=temperature, measure=True
+        )
+        runs.append(s)
+        if i == 0:
+            text = t
+
+    stats = dict(runs[0])
+    tps_samples = [
+        float(s["tokens_per_second"])
+        for s in runs
+        if _is_finite(s.get("tokens_per_second")) and float(s["tokens_per_second"]) > 0
+    ]
+    prompt_ppl = [float(s["prompt_perplexity"]) for s in runs if _is_finite(s.get("prompt_perplexity"))]
+    gen_ppl = [float(s["generate_perplexity"]) for s in runs if _is_finite(s.get("generate_perplexity"))]
+    samp_ppl = [float(s["sampling_perplexity"]) for s in runs if _is_finite(s.get("sampling_perplexity"))]
+
+    mean_tps, n_used, std_tps = _robust_mean_stats(
+        tps_samples, discard_first=discard_first, iqr_mult=iqr_mult
+    )
+    mean_pp, _, _ = _robust_mean_stats(
+        prompt_ppl, discard_first=discard_first, iqr_mult=iqr_mult
+    )
+    mean_gp, _, _ = _robust_mean_stats(
+        gen_ppl, discard_first=discard_first, iqr_mult=iqr_mult
+    )
+    mean_sp, _, _ = _robust_mean_stats(
+        samp_ppl, discard_first=discard_first, iqr_mult=iqr_mult
+    )
+
+    stats["tokens_per_second"] = mean_tps
+    stats["prompt_perplexity"] = mean_pp
+    stats["generate_perplexity"] = mean_gp
+    stats["sampling_perplexity"] = mean_sp
+    stats["bench_repeats"] = repeats
+    stats["bench_tps_n"] = n_used
+    stats["bench_tps_std"] = std_tps
+    if mean_tps > 0:
+        stats["generate_seconds"] = length / mean_tps
+        stats["inference_seconds"] = stats.get("prefill_seconds", 0.0) + stats["generate_seconds"]
+    return text, stats
+
+
 def _iso_timestamp() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
@@ -90,6 +206,9 @@ def _inference_row(
         "generate_seconds": stats.get("generate_seconds"),
         "inference_seconds": stats.get("inference_seconds"),
         "tokens_per_second": stats.get("tokens_per_second"),
+        "bench_repeats": stats.get("bench_repeats"),
+        "bench_tps_n": stats.get("bench_tps_n"),
+        "bench_tps_std": stats.get("bench_tps_std"),
         "prompt_perplexity": stats.get("prompt_perplexity"),
         "generate_perplexity": stats.get("generate_perplexity"),
         "sampling_perplexity": stats.get("sampling_perplexity"),
@@ -135,13 +254,17 @@ def main(
     ckpt = Path(checkpoint_path) if checkpoint_path else None
     net, payload, resolved_ckpt = load_for_inference(architecture, checkpoint_path=ckpt)
     _warmup(net)
-    text, stats = net.generate(net, seed=seed, length=length, temperature=temperature)
+    text, stats = _generate_with_bench_tps(
+        net, prompt=seed, length=length, temperature=temperature
+    )
     log_print("--- Generacja (best_eval) ---\n")
     print(text)
     log_print(
         f"infer: {stats['inference_seconds']:.4f}s "
         f"(prefill {stats['prefill_seconds']:.4f}s + generate {stats['generate_seconds']:.4f}s, "
-        f"{stats['tokens_per_second']:.1f} tok/s)"
+        f"{stats['tokens_per_second']:.1f} tok/s "
+        f"— śr. z {stats.get('bench_tps_n')}/{stats.get('bench_repeats')} "
+        f"(σ={stats.get('bench_tps_std', 0):.1f}))"
     )
     log_print(
         f"perplexity: prompt={stats['prompt_perplexity']:.2f}, "
@@ -179,7 +302,6 @@ def compare_models(
 ) -> list[dict]:
     eval_dir = resolve_evaluation_dir(run_tag)
     csv_path = eval_dir / INFERENCE_FILENAME
-    report_path = eval_dir / REPORT_FILENAME
     rows: list[dict] = []
 
     log_print(f"Porównanie modeli → {eval_dir}")
@@ -191,7 +313,9 @@ def compare_models(
 
         for prompt_idx, (prompt, length) in enumerate(prompts):
             ts = _iso_timestamp()
-            text, stats = net.generate(net, seed=prompt, length=length, temperature=temperature)
+            text, stats = _generate_with_bench_tps(
+                net, prompt=prompt, length=length, temperature=temperature
+            )
             model_report = net._model_report()
             row = _inference_row(
                 timestamp=ts,
@@ -210,12 +334,16 @@ def compare_models(
             rows.append(row)
             log_print(
                 f"[{architecture}] prompt {prompt_idx + 1}/{len(prompts)} "
-                f"infer={stats['inference_seconds']:.4f}s ppl_gen={stats['generate_perplexity']:.2f}"
+                f"tok/s={stats['tokens_per_second']:.1f} "
+                f"({stats.get('bench_tps_n')}/{stats.get('bench_repeats')}) "
+                f"ppl_gen={stats['generate_perplexity']:.2f}"
             )
 
     header = f"model_evaluations run: {eval_dir.name}, modele={len(models)}, prompty={len(prompts)}"
     append_inference_rows(csv_path, rows)
-    write_inference_report(report_path, rows, header=header)
+    report_path, report_simple_path = write_inference_reports(eval_dir, rows, header=header)
+    plot_inference_eval(rows, eval_dir)
     log_print(f"CSV → {csv_path}")
     log_print(f"Raport → {report_path}")
+    log_print(f"Raport (skrót) → {report_simple_path}")
     return rows

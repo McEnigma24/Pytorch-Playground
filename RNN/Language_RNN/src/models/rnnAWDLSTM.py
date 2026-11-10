@@ -24,14 +24,14 @@ class WeightDropLSTM(nn.Module):
         self.module.flatten_parameters = lambda: None
 
     def _setweights(self) -> None:
-        if not self.training:
-            for name_w in self.weights:
-                raw = getattr(self, f"{name_w}_raw")
-                setattr(self.module, name_w, raw)
-            return
+        # Zwykły tensor (nie Parameter) przez LSTM.__setattr__, żeby odświeżyć _flat_weights (cuDNN).
         for name_w in self.weights:
-            raw = getattr(self, f"{name_w}_raw")
-            w = F.dropout(raw, p=self.dropout, training=True)
+            raw: nn.Parameter = getattr(self, f"{name_w}_raw")
+            if self.training and self.dropout > 0:
+                w = F.dropout(raw, p=self.dropout, training=True)
+            else:
+                w = raw.view_as(raw)
+            self.module._parameters.pop(name_w, None)
             setattr(self.module, name_w, w)
 
     def forward(self, *args):
