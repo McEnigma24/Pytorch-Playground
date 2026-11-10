@@ -28,56 +28,19 @@ from text_and_tokenizer import load_tokenizer, prepare_language_data, tokenizer_
 from metrics.plot_training import plot_training_run
 from metrics.run_metrics import RunMetricsLogger
 from log_print import log_print, tensorboard_run_dir
-
-
-def project_root() -> Path:
-    return Path(__file__).resolve().parents[1]
-
-
-def _sanitize_run_tag(tag: str) -> str:
-    cleaned = tag.strip().replace(" ", "-")
-    return "".join(c if c.isalnum() or c in "-_" else "-" for c in cleaned).strip("-")
-
-
-def _run_tag_suffix(run_tag: str | None) -> str:
-    if run_tag is None or not str(run_tag).strip():
-        return ""
-    safe = _sanitize_run_tag(str(run_tag))
-    return f"-{safe}" if safe else ""
-
-
-def resolve_save_dir(
-    model_name: str,
-    when: datetime | None = None,
-    run_tag: str | None = None,
-) -> Path:
-    """Nowy katalog runu: saved_models/{arch}-{YYYY.MM.DD-HHMMSS}[-{tag}] (o ile nie podano SAVE_DIR)."""
-    env = os.environ.get("LANGUAGE_RNN_SAVE_DIR")
-    if env:
-        root = Path(env)
-    else:
-        when = when or datetime.now()
-        suffix = _run_tag_suffix(run_tag)
-        root = project_root() / "saved_models" / f"{model_name}-{when:%Y.%m.%d-%H%M%S}{suffix}"
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "checkpoints").mkdir(parents=True, exist_ok=True)
-    return root
+from run_paths import (
+    prepare_resumed_run,
+    project_root,
+    resolve_resume_from_env_or_arg,
+    resolve_save_dir,
+    resolve_source_run_dir,
+)
 
 
 def checkpoint_run_dir(checkpoint_path: Path) -> Path:
     if checkpoint_path.parent.name == "checkpoints":
         return checkpoint_path.parent.parent
     return checkpoint_path.parent
-
-
-def resolve_resume_checkpoint_path() -> Path | None:
-    raw = os.environ.get("LANGUAGE_RNN_CHECKPOINT", "").strip()
-    if not raw:
-        return None
-    path = Path(raw)
-    if not path.is_file():
-        raise FileNotFoundError(f"LANGUAGE_RNN_CHECKPOINT nie istnieje: {path}")
-    return path
 
 
 def load_checkpoint_payload(path: Path | str) -> dict:
@@ -98,7 +61,6 @@ def _sync_device(device: torch.device) -> None:
 TRANSFORMER_ARCHITECTURES = frozenset(
     {"transformer_nanoGPT", "transformer_miniLLaMA", "transformer_GPT2small"}
 )
-
 
 def _default_num_layers(architecture: str) -> int:
     match architecture:
@@ -239,6 +201,78 @@ class LanguageModelNet(nn.Module):
             kwargs["persistent_workers"] = True
         return DataLoader(dataset, **kwargs)
 
+    def _clamp_eval_batch_size(self, batch_size: int) -> int:
+        """Ogranicza batch walidacji, gdy szczyt pamięci (gł. logits [B,S,V]) przekracza VRAM."""
+        bs = max(1, int(batch_size))
+        env_cap = os.environ.get("LANGUAGE_RNN_EVAL_BATCH_CAP", "").strip()
+        if env_cap:
+            try:
+                bs = min(bs, max(1, int(env_cap)))
+            except ValueError:
+                pass
+
+        if self.architecture not in TRANSFORMER_ARCHITECTURES or self.device.type != "cuda":
+            return bs
+
+        # fp32 logits + margines na CE / fragmentację
+        bytes_per_batch = max(1, 8 * self.seq_len * self.vocab_size)
+        try:
+            free, _total = torch.cuda.mem_get_info(self.device)
+        except Exception:
+            return bs
+
+        if free <= 0:
+            return bs
+
+        budget = int(free * 0.45)
+        max_by_mem = max(1, budget // bytes_per_batch)
+        if max_by_mem < bs:
+            log_print(
+                f"Eval batch: {bs} → {max_by_mem} "
+                f"(seq={self.seq_len}, vocab={self.vocab_size:,}, wolne VRAM ~{free / 2**30:.2f} GiB)"
+            )
+            bs = max_by_mem
+        return bs
+
+    def _evall_once(
+        self,
+        model: LanguageModelNet,
+        batch_size: int,
+        writer: SummaryWriter | None,
+        epoch: int | None,
+    ) -> tuple[float, float]:
+        model.to(self.device)
+        val_loader = self._data_loader(self.val_ds, batch_size, shuffle=False)
+        log_print(f"Walidacja: {len(val_loader):,} batchy (batch_size={batch_size})")
+
+        model.eval()
+        running_loss = torch.zeros((), device=self.device)
+        total_targets = 0
+        with torch.no_grad():
+            for x, y in val_loader:
+                x = x.to(self.device, non_blocking=True)
+                y = y.to(self.device, non_blocking=True)
+                batch_n = x.size(0)
+                hidden = self._batch_hidden(batch_n)
+                logits, _ = model(x, hidden)
+                loss = self.cost_function(logits, y.reshape(-1))
+                n_targets = y.numel()
+                running_loss += loss * n_targets
+                total_targets += n_targets
+
+        if total_targets:
+            avg_loss = (running_loss / total_targets).item()
+            perplexity = math.exp(min(avg_loss, 20.0))
+        else:
+            avg_loss = 0.0
+            perplexity = 1.0
+
+        log_print(f"Val: loss={avg_loss:.4f}, eval_perplexity={perplexity:.2f}")
+        if writer is not None and epoch is not None:
+            writer.add_scalar("eval/loss", avg_loss, epoch)
+            writer.add_scalar("eval/perplexity", perplexity, epoch)
+        return avg_loss, perplexity
+
     def _log_custom_scalars_layout(self, writer: SummaryWriter) -> None:
         writer.add_custom_scalars(
             {
@@ -280,7 +314,7 @@ class LanguageModelNet(nn.Module):
 
     def _ensure_save_dir(self) -> Path:
         if self.save_dir is None:
-            self.save_dir = resolve_save_dir(self.model_name)
+            self.save_dir = resolve_save_dir(self.architecture)
             log_print(f"Zapis modeli: {self.save_dir}")
         return self.save_dir
 
@@ -457,6 +491,9 @@ class LanguageModelNet(nn.Module):
         train_loader = self._data_loader(self.train_ds, batch_size, shuffle=True)
 
         for epoch in range(start_epoch, epochs):
+            log_print(
+                f"Epoka {epoch + 1}/{epochs}: {len(train_loader):,} batchy (batch_size={batch_size})"
+            )
             t_train0 = time.perf_counter()
             model.train()
             running_loss = torch.zeros((), device=self.device)
@@ -536,36 +573,19 @@ class LanguageModelNet(nn.Module):
         writer: SummaryWriter | None = None,
         epoch: int | None = None,
     ) -> tuple[float, float]:
-        model.to(self.device)
-        val_loader = self._data_loader(self.val_ds, batch_size, shuffle=False)
-
-        model.eval()
-        running_loss = torch.zeros((), device=self.device)
-        total_targets = 0
-        with torch.no_grad():
-            for x, y in val_loader:
-                x = x.to(self.device, non_blocking=True)
-                y = y.to(self.device, non_blocking=True)
-                batch_n = x.size(0)
-                hidden = self._batch_hidden(batch_n)
-                logits, _ = model(x, hidden)
-                loss = self.cost_function(logits, y.reshape(-1))
-                n_targets = y.numel()
-                running_loss += loss * n_targets
-                total_targets += n_targets
-
-        if total_targets:
-            avg_loss = (running_loss / total_targets).item()
-            perplexity = math.exp(min(avg_loss, 20.0))
-        else:
-            avg_loss = 0.0
-            perplexity = 1.0
-
-        log_print(f"Val: loss={avg_loss:.4f}, eval_perplexity={perplexity:.2f}")
-        if writer is not None and epoch is not None:
-            writer.add_scalar("eval/loss", avg_loss, epoch)
-            writer.add_scalar("eval/perplexity", perplexity, epoch)
-        return avg_loss, perplexity
+        bs = self._clamp_eval_batch_size(batch_size)
+        while True:
+            try:
+                return self._evall_once(model, bs, writer, epoch)
+            except torch.cuda.OutOfMemoryError:
+                if self.device.type != "cuda" or bs <= 1:
+                    raise
+                torch.cuda.empty_cache()
+                new_bs = max(1, bs // 2)
+                log_print(
+                    f"CUDA OOM przy walidacji (batch_size={bs}) — ponawiam z batch_size={new_bs}"
+                )
+                bs = new_bs
 
     def _perplexity_from_logits(
         self,
@@ -782,6 +802,7 @@ def main(
     checkpoint_every: int = 5,
     eval_every: int = 5,
     run_tag: str | None = None,
+    resume: str | None = None,
     embed_dim: int = 128,
     hidden_size: int = 256,
     num_layers: int | None = None,
@@ -801,15 +822,25 @@ def main(
     log_print(f"Urządzenie treningu: {device}")
     log_print(f"TensorBoard run: {tensorboard_dir}")
 
-    ckpt_path = resolve_resume_checkpoint_path()
+    resume_spec = resolve_resume_from_env_or_arg(resume)
     save_env = os.environ.get("LANGUAGE_RNN_SAVE_DIR", "").strip()
-    if ckpt_path is not None and not save_env:
-        raise ValueError(
-            "Wznowienie wymaga katalogu zapisu: ./start <checkpoint.pt> <save_dir>"
-        )
-    save_dir = Path(save_env) if save_env else resolve_save_dir(architecture, run_tag=run_tag)
+    resumed_from: dict[str, str] | None = None
+    ckpt_path: Path | None = None
+
+    if save_env:
+        save_dir = Path(save_env)
+    else:
+        save_dir = resolve_save_dir(architecture, run_tag=run_tag)
+
     save_dir.mkdir(parents=True, exist_ok=True)
     (save_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
+
+    if resume_spec:
+        source_run = resolve_source_run_dir(architecture, resume_spec)
+        log_print(f"Wznawiam z runu: {source_run}")
+        ckpt_path = prepare_resumed_run(source_run, save_dir, architecture)
+        resumed_from = {"run_dir": str(source_run), "checkpoint": str(ckpt_path)}
+
     log_print(f"Katalog zapisu: {save_dir}")
     if ckpt_path:
         log_print(f"Checkpoint wejściowy: {ckpt_path}")
@@ -832,6 +863,7 @@ def main(
         run_id=save_dir.name,
         tensorboard_dir=tensorboard_dir,
         hparams=net._training_hparams(),
+        resumed_from=resumed_from,
     )
     report = net._model_report()
     metrics_logger.write_model_report(report, repr(net.rnn))
@@ -857,7 +889,9 @@ def main(
             checkpoint_every=ckpt_every,
             eval_every=sample_every,
         )
-        eval_loss, eval_ppl = net.evall(net, writer=writer, epoch=epochs)
+        eval_loss, eval_ppl = net.evall(
+            net, batch_size=batch_size, writer=writer, epoch=epochs
+        )
         net.save_final(net, optimizer, epochs, eval_loss, eval_ppl, best_eval_loss)
         train_total_seconds = time.perf_counter() - t_run0
         metrics_logger.write_timing(

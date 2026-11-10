@@ -21,3 +21,4 @@ model_evaluations/
 src/text_and_tokenizer/data/tokenizer/
 src/text_and_tokenizer/data/speakleash/
 src/text_and_tokenizer/data/text/corpus.txt
+src/text_and_tokenizer/data/encoded/

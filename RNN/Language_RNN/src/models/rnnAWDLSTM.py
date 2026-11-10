@@ -1,4 +1,14 @@
-"""Model: embedding → stacked LSTM + WeightDrop (DropConnect na weight_hh) → linear."""
+"""Model: embedding → stacked LSTM + WeightDrop (DropConnect na weight_hh) → linear.
+
+AWD-LSTM (Merity et al.): WeightDrop — w treningu losowo zeruje *całe wiersze*
+macierzy wag rekurencyjnych (tu weight_hh_l0), nie aktywacje (to zwykły Dropout).
+Cel: silniejsza regularyzacja niż sam dropout na hidden, mniejsze przeuczenie LSTM.
+
+To NIE jest „weight decay” (L2 w optymalizatorze). Weight decay dodaje karę ‖w‖²
+do loss (u nas AdamW może to robić osobno); WeightDrop maskuje wagi przed forwardem.
+
+Ścieżka: embed → dropout → [ WeightDropLSTM + dropout ]×L → linear (opcjonalnie tied z embed).
+"""
 
 from __future__ import annotations
 
@@ -12,6 +22,9 @@ from models._tie import maybe_tie_lm_head
 
 
 class WeightDropLSTM(nn.Module):
+    """Opakowanie LSTM: wagi z listy `weights` trzymane jako *_raw; w train() przed
+    forwardem nakładany F.dropout na macierz wag (DropConnect na połączeniach hh)."""
+
     def __init__(self, module: nn.LSTM, weights: list[str], dropout: float) -> None:
         super().__init__()
         self.module = module
@@ -42,6 +55,8 @@ class WeightDropLSTM(nn.Module):
 
 
 class rnnAWDLSTM(nn.Module):
+    """Kilka jednowarstwowych LSTM w kolejności (głębokość = liczba modułów),
+    każdy z WeightDrop na wagach hidden→hidden; embed_dropout + dropout między warstwami."""
 
     @staticmethod
     def name() -> str:

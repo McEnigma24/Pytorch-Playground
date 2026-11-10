@@ -31,9 +31,12 @@ mkdir -p logs
 # module load python/3.12 cuda/12.4
 # uv sync
 
-echo "Job $SLURM_JOB_ID task $SLURM_ARRAY_TASK_ID → $ARCH"
+RESUME="${RESUME:-}"
+
+echo "Job $SLURM_JOB_ID task $SLURM_ARRAY_TASK_ID → $ARCH (RESUME=${RESUME:-<brak>})"
 
 uv run python scripts/plgrid/run_train.py \
   --architecture "$ARCH" \
   --preset test125M_1ep \
-  --tensorboard-root "$TENSORBOARD_LOGDIR"
+  --tensorboard-root "$TENSORBOARD_LOGDIR" \
+  ${RESUME:+--resume "$RESUME"}

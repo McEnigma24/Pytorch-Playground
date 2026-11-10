@@ -1,4 +1,15 @@
-"""Model: embedding → RMSNorm + RoPE + SwiGLU (styl mini-LLaMA) → linear (tied)."""
+"""Model: embedding → RMSNorm + RoPE + SwiGLU (styl mini-LLaMA) → linear (tied).
+
+Blok dekodera (pre-norm, jak LLaMA):
+  tok_emb → [ Block × N ] → RMSNorm → lm_head
+
+  Block:
+    x → RMSNorm → CausalRoPEAttention → (+) → RMSNorm → SwiGLU → (+)
+
+  CausalRoPEAttention — uwaga tylko wstecz (LM), Q/K z RoPE, KV cache przy inferencji.
+  RMSNorm — normalizacja warstwowa (tańsza od LayerNorm).
+  SwiGLU — FFN z bramką SiLU (dwa projekcje × bramka, potem w dół).
+"""
 
 from __future__ import annotations
 
@@ -12,6 +23,9 @@ from models._rope import apply_rope
 
 
 class RMSNorm(nn.Module):
+    """Root Mean Square LayerNorm: skaluje aktywacje przez RMS (bez średniej).
+    Stabilizuje trening; w LLaMA zamiennik LayerNorm (mniej operacji)."""
+
     def __init__(self, dim: int, eps: float = 1e-6) -> None:
         super().__init__()
         self.eps = eps
@@ -23,6 +37,8 @@ class RMSNorm(nn.Module):
 
 
 class SwiGLU(nn.Module):
+    """Feed-forward: SiLU(w1(x)) * w2(x), potem w3 — bramkowany FFN (np. PaLM/LLaMA)."""
+
     def __init__(self, n_embd: int, n_ff: int, dropout: float) -> None:
         super().__init__()
         self.w1 = nn.Linear(n_embd, n_ff, bias=False)
@@ -35,6 +51,10 @@ class SwiGLU(nn.Module):
 
 
 class CausalRoPEAttention(nn.Module):
+    """Multi-head self-attention z maską przyczynową (tylko tokeny ≤ bieżący) i RoPE na Q/K.
+    RoPE koduje pozycję w płaszczyźnie (sin/cos), bez stałego wektora pozycji.
+    cache przechowuje dotychczasowe K/V przy autoregresyjnej generacji."""
+
     def __init__(self, n_embd: int, n_head: int, dropout: float) -> None:
         super().__init__()
         assert n_embd % n_head == 0
@@ -72,6 +92,8 @@ class CausalRoPEAttention(nn.Module):
 
 
 class Block(nn.Module):
+    """Jeden transformer block (pre-norm): norm → attn → residual → norm → SwiGLU → residual."""
+
     def __init__(self, n_embd: int, n_head: int, n_ff: int, dropout: float) -> None:
         super().__init__()
         self.norm1 = RMSNorm(n_embd)

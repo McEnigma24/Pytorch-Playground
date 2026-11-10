@@ -214,11 +214,15 @@ def write_inference_reports(
     rows: list[dict[str, Any]],
     *,
     header: str = "",
+    preamble: str = "",
 ) -> tuple[Path, Path]:
     """Pełny report.txt + report_simplified.txt (GEN + tok/s)."""
     report_dir = Path(report_dir)
     full = report_dir / REPORT_FILENAME
     simple = report_dir / REPORT_SIMPLIFIED_FILENAME
-    write_inference_report(full, rows, header=header)
-    write_inference_report_simplified(simple, rows, header=header)
+    merged_header = header
+    if preamble:
+        merged_header = f"{header}\n\n{preamble}".strip() if header else preamble.strip()
+    write_inference_report(full, rows, header=merged_header)
+    write_inference_report_simplified(simple, rows, header=merged_header)
     return full, simple

@@ -7,7 +7,7 @@ LOCAL_BEST_LSTM = "rnnAWDLSTM"
 LOCAL_BEST_TRANSFORMER = "transformer_miniLLaMA"
 
 _LOCAL6G_BASE = dict(
-    epochs=5,
+    epochs=25,
     run_tag="local6G",
     eval_every=1,
     checkpoint_every=1,

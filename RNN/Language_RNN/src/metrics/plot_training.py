@@ -32,18 +32,28 @@ def _load_epoch_frame(save_dir: Path) -> pd.DataFrame:
     return df.sort_values("epoch")
 
 
-def _load_train_total_seconds(save_dir: Path) -> float | None:
+def _load_run_meta(save_dir: Path) -> dict:
     meta_path = save_dir / META_FILENAME
     if not meta_path.is_file():
-        return None
-    meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    raw = meta.get("train_total_seconds")
+        return {}
+    return json.loads(meta_path.read_text(encoding="utf-8"))
+
+
+def _load_train_total_seconds(save_dir: Path) -> float | None:
+    raw = _load_run_meta(save_dir).get("train_total_seconds")
     if raw is None:
         return None
     try:
         return float(raw)
     except (TypeError, ValueError):
         return None
+
+
+def _timing_rows_for_wall_compare(df: pd.DataFrame, start_epoch: int) -> pd.DataFrame:
+    """Wall clock dotyczy bieżącej sesji — sumuj tylko epoki po wznowieniu (epoch > start_epoch)."""
+    if start_epoch <= 0:
+        return df
+    return df[df["epoch"] > start_epoch]
 
 
 def plot_training_run(save_dir: Path, *, dpi: int = 120) -> list[Path]:
@@ -61,7 +71,14 @@ def plot_training_run(save_dir: Path, *, dpi: int = 120) -> list[Path]:
     plots_dir.mkdir(parents=True, exist_ok=True)
     saved: list[Path] = []
     sns.set_theme(style="whitegrid")
-    arch = save_dir.name.split("-", 1)[0]
+    arch = ""
+    meta = _load_run_meta(save_dir)
+    if meta:
+        arch = str(meta.get("architecture") or "")
+    if not arch and save_dir.parent.name not in ("saved_models", "model_evaluations"):
+        arch = save_dir.parent.name
+    if not arch:
+        arch = save_dir.name.split("-", 1)[0]
 
     # Loss #
     fig, ax = plt.subplots(figsize=(9, 5))
@@ -112,9 +129,11 @@ def plot_training_run(save_dir: Path, *, dpi: int = 120) -> list[Path]:
     saved.append(out)
 
     # Cały trening #
+    start_epoch = int(meta.get("start_epoch") or 0)
+    timing_df = _timing_rows_for_wall_compare(df, start_epoch)
     total_wall = _load_train_total_seconds(save_dir)
-    sum_train = float(df["train_seconds"].sum()) if "train_seconds" in df else float("nan")
-    sum_eval = float(df["eval_seconds"].sum()) if "eval_seconds" in df else float("nan")
+    sum_train = float(timing_df["train_seconds"].sum()) if "train_seconds" in timing_df else float("nan")
+    sum_eval = float(timing_df["eval_seconds"].sum()) if "eval_seconds" in timing_df else float("nan")
     sum_logged = sum_train + sum_eval
 
     fig, ax = plt.subplots(figsize=(7, 4))
@@ -123,8 +142,11 @@ def plot_training_run(save_dir: Path, *, dpi: int = 120) -> list[Path]:
     if total_wall is not None:
         labels.append("cały run (wall)")
         values.append(total_wall)
-    if sum_logged == sum_logged:
-        labels.append("suma train+eval (log)")
+    if sum_logged == sum_logged and len(timing_df) > 0:
+        if start_epoch > 0:
+            labels.append(f"suma train+eval (ep. {start_epoch + 1}–{int(df['epoch'].max())})")
+        else:
+            labels.append("suma train+eval (log)")
         values.append(sum_logged)
     if labels:
         ax.barh(labels, values, color=["#4c72b0", "#55a868"][: len(labels)])

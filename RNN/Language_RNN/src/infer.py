@@ -13,28 +13,17 @@ from metrics.infer_metrics import (
     write_inference_reports,
 )
 from metrics.plot_inference import plot_inference_eval
-from text_and_tokenizer import load_tokenizer, tokenizer_dir
-from train import (
-    _run_tag_suffix,
-    checkpoint_run_dir,
-    load_checkpoint,
-    project_root,
+from metrics.plot_training_compare import (
+    TRAINING_COMPARE_FILENAME,
+    format_training_compare_section,
+    load_training_summaries,
+    plot_training_model_compare,
+    write_training_compare_csv,
 )
+from text_and_tokenizer import load_tokenizer, tokenizer_dir
+from train import checkpoint_run_dir, load_checkpoint
+from run_paths import find_latest_run_dir, resolve_evaluation_dir
 from log_print import log_print
-
-
-def find_latest_run_dir(architecture: str, root: Path | None = None) -> Path:
-    root = root or project_root() / "saved_models"
-    if not root.is_dir():
-        raise FileNotFoundError(f"Brak katalogu saved_models: {root}")
-
-    prefix = f"{architecture}-"
-    candidates = [p for p in root.iterdir() if p.is_dir() and p.name.startswith(prefix)]
-    if not candidates:
-        raise FileNotFoundError(
-            f"Brak runów {prefix}* w {root} — najpierw wytrenuj (train.main architecture={architecture!r})"
-        )
-    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 def resolve_best_eval_pt(run_dir: Path, architecture: str) -> Path:
@@ -42,14 +31,6 @@ def resolve_best_eval_pt(run_dir: Path, architecture: str) -> Path:
     if not path.is_file():
         raise FileNotFoundError(f"Brak {path.name} w {run_dir}")
     return path
-
-
-def resolve_evaluation_dir(run_tag: str | None = None) -> Path:
-    when = datetime.now()
-    suffix = _run_tag_suffix(run_tag)
-    root = project_root() / "model_evaluations" / f"{when:%Y.%m.%d-%H%M%S}{suffix}"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
 
 
 def _warmup(net, *, length: int = 8) -> None:
@@ -257,8 +238,8 @@ def main(
     text, stats = _generate_with_bench_tps(
         net, prompt=seed, length=length, temperature=temperature
     )
-    log_print("--- Generacja (best_eval) ---\n")
-    print(text)
+    log_print("--- Generacja (best_eval) ---")
+    log_print(text, prefix=False)
     log_print(
         f"infer: {stats['inference_seconds']:.4f}s "
         f"(prefill {stats['prefill_seconds']:.4f}s + generate {stats['generate_seconds']:.4f}s, "
@@ -306,9 +287,16 @@ def compare_models(
 
     log_print(f"Porównanie modeli → {eval_dir}")
 
+    training_run_pairs: list[tuple[str, Path]] = []
+    seen_runs: set[Path] = set()
+
     for architecture, checkpoint_path in models:
         ckpt = Path(checkpoint_path) if checkpoint_path else None
         net, payload, resolved_ckpt = load_for_inference(architecture, checkpoint_path=ckpt)
+        run_dir = checkpoint_run_dir(resolved_ckpt)
+        if run_dir not in seen_runs:
+            seen_runs.add(run_dir)
+            training_run_pairs.append((architecture, run_dir))
         _warmup(net)
 
         for prompt_idx, (prompt, length) in enumerate(prompts):
@@ -340,9 +328,20 @@ def compare_models(
             )
 
     header = f"model_evaluations run: {eval_dir.name}, modele={len(models)}, prompty={len(prompts)}"
+    training_summaries = load_training_summaries(training_run_pairs)
+    training_preamble = format_training_compare_section(training_summaries)
+
     append_inference_rows(csv_path, rows)
-    report_path, report_simple_path = write_inference_reports(eval_dir, rows, header=header)
+    report_path, report_simple_path = write_inference_reports(
+        eval_dir, rows, header=header, preamble=training_preamble
+    )
     plot_inference_eval(rows, eval_dir)
+    if training_summaries:
+        tc_csv = eval_dir / TRAINING_COMPARE_FILENAME
+        write_training_compare_csv(tc_csv, training_summaries)
+        plot_training_model_compare(training_summaries, eval_dir)
+        log_print(f"Trening (CSV) → {tc_csv}")
+        log_print(f"Trening (wykres) → {eval_dir / 'training_compare.png'}")
     log_print(f"CSV → {csv_path}")
     log_print(f"Raport → {report_path}")
     log_print(f"Raport (skrót) → {report_simple_path}")

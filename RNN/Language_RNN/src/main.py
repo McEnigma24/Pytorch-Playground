@@ -78,19 +78,26 @@ if __name__ == "__main__":
         LOCAL_BEST_TRANSFORMER,
     )
 
-    # Pełny Speakleash (~280M znaków) zabija RAM w Dockerze/WSL — włącz przy train.main lokalnie:
-    # os.environ.setdefault("LANGUAGE_RNN_MAX_CORPUS_CHARS", "12000000")
-    # if os.environ.get("LANGUAGE_RNN_MAX_CORPUS_CHARS"):
-    #     log_print(
-    #         f"Limit korpusu: {int(os.environ['LANGUAGE_RNN_MAX_CORPUS_CHARS']):,} znaków "
-    #         f"(usuń env dla PLGrid / pełnego treningu)"
-    #     )
+    # Pełny Speakleash (~280M znaków) zabija RAM w Dockerze/WSL — lokalnie obetnij korpus:
+    os.environ.setdefault("LANGUAGE_RNN_MAX_CORPUS_CHARS", "12_000_000")
+    if os.environ.get("LANGUAGE_RNN_MAX_CORPUS_CHARS"):
+        log_print(
+            f"Limit korpusu: {int(os.environ['LANGUAGE_RNN_MAX_CORPUS_CHARS']):,} znaków "
+            f"(usuń env dla PLGrid / pełnego treningu)"
+        )
 
-    # train.main(tensorboard_dir=run_dir, architecture=LOCAL_BEST_LSTM, **LOCAL6G_AWD)
-    # train.main(tensorboard_dir=run_dir, architecture=LOCAL_BEST_TRANSFORMER, **LOCAL6G_LLAMA)
+    train.main(tensorboard_dir=run_dir, architecture=LOCAL_BEST_LSTM, **LOCAL6G_AWD)
+    train.main(tensorboard_dir=run_dir, architecture=LOCAL_BEST_TRANSFORMER, **LOCAL6G_LLAMA)
+
+    # train.main(tensorboard_dir=run_dir, architecture=LOCAL_BEST_LSTM, resume="latest", **LOCAL6G_AWD)
+    # train.main(
+    #     tensorboard_dir=run_dir,
+    #     architecture=LOCAL_BEST_LSTM,
+    #     resume="saved_models/rnnAWDLSTM/8205732579___local6G___2026-11-10_00-20",
+    #     **LOCAL6G_AWD,
+    # )
 
     length = 25
-
     infer.compare_models(
         models=[
             (LOCAL_BEST_LSTM, None),

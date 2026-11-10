@@ -154,6 +154,11 @@ def main() -> None:
     )
     parser.add_argument("--tensorboard-root", default=os.environ.get("TENSORBOARD_LOGDIR", "/tmp/lrnn_runs"))
     parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument(
+        "--resume",
+        default=os.environ.get("RESUME", "").strip() or None,
+        help="latest lub ścieżka do katalogu runu (alternatywa: env RESUME)",
+    )
     args = parser.parse_args()
 
     reset_log_timer()
@@ -162,7 +167,7 @@ def main() -> None:
         kw["epochs"] = args.epochs
 
     tb = tensorboard_run_dir(str(Path(args.tensorboard_root) / args.architecture))
-    train.main(tensorboard_dir=tb, architecture=args.architecture, **kw)
+    train.main(tensorboard_dir=tb, architecture=args.architecture, resume=args.resume, **kw)
 
 
 if __name__ == "__main__":
