@@ -294,8 +294,6 @@ def api_abort(material_id: str):
         raise HTTPException(status_code=404, detail="Material not found")
 
     status = meta.get("status")
-    if status == "paused":
-        return {"id": material_id, "status": "paused", "active": False}
     if status not in ("queued", "processing"):
         raise HTTPException(status_code=409, detail=f"Cannot abort status {status}")
 

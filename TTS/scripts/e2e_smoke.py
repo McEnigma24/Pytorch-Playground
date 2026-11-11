@@ -187,27 +187,6 @@ def test_inactive_abort_keeps_chunk_cache() -> None:
     mat.delete_material(mid)
 
 
-def test_abort_on_paused_is_idempotent() -> None:
-    mid = f"e2e_abort_paused_{int(time.time())}"
-    if mat.material_dir(mid).exists():
-        mat.delete_material(mid)
-    mat.material_dir(mid).mkdir(parents=True)
-    mat.create_uploaded_record(
-        material_id=mid,
-        title="abort paused",
-        num_pages=1,
-        model_key="1.7b-custom-voice",
-    )
-    mat.update_meta(mid, status="paused", progress="1/3")
-
-    with TestClient(app) as client:
-        r = client.post(f"/api/materials/{mid}/abort")
-        assert r.status_code == 200, r.text
-        assert r.json()["status"] == "paused"
-
-    mat.delete_material(mid)
-
-
 def test_abort_forward_pre_hook_raises() -> None:
     import threading
 
@@ -463,7 +442,6 @@ if __name__ == "__main__":
     test_eta_fields_finish_at()
     test_chunk_cache_validates_text_sha1()
     test_inactive_abort_keeps_chunk_cache()
-    test_abort_on_paused_is_idempotent()
     test_abort_forward_pre_hook_raises()
     test_inactive_processing_delete_and_pause()
     test_recover_orphans()
