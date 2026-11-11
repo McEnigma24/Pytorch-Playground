@@ -157,6 +157,29 @@ fieldset legend {
   font-size: 0.9rem;
 }
 
+.source-row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 0.75rem;
+  align-items: end;
+}
+
+@media (max-width: 640px) {
+  .source-row {
+    grid-template-columns: 1fr;
+  }
+  .source-or {
+    display: none;
+  }
+}
+
+.source-or {
+  align-self: center;
+  font-size: 0.85rem;
+  color: var(--muted, #6b7280);
+  padding-bottom: 0.55rem;
+}
+
 .filter-grid {
   display: grid;
   gap: 0.35rem;
@@ -182,6 +205,7 @@ label {
 }
 
 input[type="text"],
+input[type="url"],
 input[type="number"],
 input[type="file"],
 textarea,
@@ -286,6 +310,17 @@ textarea.readonly-hint {
 .section-title {
   margin: 0 0 0.5rem;
   font-size: 1rem;
+}
+
+.eta-countdown {
+  display: grid;
+  gap: 0.2rem;
+  margin-top: 0.35rem;
+}
+
+.eta-line {
+  margin: 0;
+  line-height: 1.35;
 }
 
 .progress-wrap {

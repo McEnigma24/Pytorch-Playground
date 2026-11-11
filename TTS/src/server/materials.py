@@ -124,7 +124,13 @@ def list_materials() -> list[dict[str, Any]]:
                 "chars_done": meta.get("chars_done"),
                 "eta_sec": meta.get("eta_sec"),
                 "eta_at": meta.get("eta_at"),
+                "eta_finish_at": meta.get("eta_finish_at"),
+                "chunk_eta_sec": meta.get("chunk_eta_sec"),
+                "chunk_eta_at": meta.get("chunk_eta_at"),
+                "chunk_finish_at": meta.get("chunk_finish_at"),
+                "current_chunk_chars": meta.get("current_chunk_chars"),
                 "sec_per_char": meta.get("sec_per_char"),
+                "chunk_count": meta.get("chunk_count"),
             }
         )
     out.sort(key=lambda m: m.get("created_at") or "", reverse=True)
@@ -137,6 +143,7 @@ def create_uploaded_record(
     title: str,
     num_pages: int,
     model_key: str,
+    source_url: str | None = None,
 ) -> dict[str, Any]:
     meta = {
         "id": material_id,
@@ -154,6 +161,7 @@ def create_uploaded_record(
         "page_to": num_pages,
         "filters": None,
         "stop_requested": None,
+        "source_url": source_url,
     }
     write_meta(material_id, meta)
     return meta

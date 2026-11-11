@@ -6,6 +6,7 @@ import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -20,6 +21,8 @@ from server.pdf_text import (
     is_subsequence_of,
     pdf_page_count,
 )
+from server.pdf_fetch import PdfFetchError, fetch_pdf_bytes
+from server import worker as wk
 from server.worker import enqueue, start_worker
 from tts.document_pipeline import DEFAULT_MODEL
 from tts.infer_Qwen_3_tts import PROJECT_DIR
@@ -69,7 +72,10 @@ def api_stats() -> dict:
 
 @app.get("/api/materials")
 def api_list_materials() -> list[dict]:
-    return mat.list_materials()
+    items = mat.list_materials()
+    for m in items:
+        m["active"] = wk.is_active(m["id"])
+    return items
 
 
 @app.get("/api/materials/{material_id}")
@@ -101,13 +107,31 @@ def api_get_artifact(material_id: str, kind: str):
 
 @app.post("/api/materials", status_code=201)
 async def api_create_material(
-    pdf: UploadFile = File(...),
+    pdf: UploadFile | None = File(None),
+    pdf_url: str = Form(default=""),
     title: str = Form(default=""),
 ):
-    if not pdf.filename or not pdf.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="pdf file required")
+    url_given = bool(pdf_url.strip())
+    file_given = pdf is not None and bool(pdf.filename)
+    if url_given == file_given:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide exactly one of: pdf file or pdf_url",
+        )
 
-    display_title = title.strip() or Path(pdf.filename).stem
+    if file_given:
+        if not pdf.filename or not pdf.filename.lower().endswith(".pdf"):
+            raise HTTPException(status_code=400, detail="pdf file must have .pdf extension")
+        display_title = title.strip() or Path(pdf.filename).stem
+        source_url: str | None = None
+    else:
+        display_title = title.strip()
+        if not display_title:
+            parsed = urlparse(pdf_url.strip())
+            path_name = Path(parsed.path).stem
+            display_title = path_name or "untitled"
+        source_url = pdf_url.strip()
+
     material_id = mat.sanitize_title(display_title)
     if mat.material_id_exists(material_id):
         raise HTTPException(status_code=409, detail=f"Material id already exists: {material_id}")
@@ -116,10 +140,18 @@ async def api_create_material(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     pdf_path = out_dir / mat.PDF_NAME
-    with pdf_path.open("wb") as f:
-        shutil.copyfileobj(pdf.file, f)
-
     try:
+        if file_given:
+            with pdf_path.open("wb") as f:
+                shutil.copyfileobj(pdf.file, f)
+        else:
+            try:
+                data = fetch_pdf_bytes(source_url or "")
+            except PdfFetchError as exc:
+                mat.delete_material(material_id)
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            pdf_path.write_bytes(data)
+
         num_pages = pdf_page_count(pdf_path)
     except OSError as exc:
         mat.delete_material(material_id)
@@ -130,6 +162,7 @@ async def api_create_material(
         title=display_title,
         num_pages=num_pages,
         model_key=DEFAULT_MODEL,
+        source_url=source_url,
     )
     return {"id": material_id, "num_pages": num_pages, "status": "uploaded"}
 
@@ -217,13 +250,10 @@ def api_generate(material_id: str, body: GenerateBody):
     text_path = mat.material_dir(material_id) / mat.TEXT_NAME
     text_path.write_text(candidate + "\n", encoding="utf-8")
 
-    from server import processing_stats as pstats
     from tts.document_pipeline import chunk_text
 
     chunks = chunk_text(candidate)
     chars_total = sum(len(c) for c in chunks)
-    prior = pstats.sec_per_char_prior()
-    eta_sec = round(chars_total * prior, 2) if prior else None
 
     mat.update_meta(
         material_id,
@@ -237,14 +267,55 @@ def api_generate(material_id: str, body: GenerateBody):
         chars_total=chars_total,
         chars_done=0,
         chunk_count=len(chunks),
-        eta_sec=eta_sec,
-        eta_at=datetime.now(timezone.utc).isoformat() if eta_sec is not None else None,
+        eta_sec=None,
+        eta_at=None,
+        eta_finish_at=None,
         sec_per_char=None,
         proc_elapsed_sec=None,
         proc_chars=None,
     )
     enqueue(material_id)
     return {"id": material_id, "status": "queued"}
+
+
+def _clear_chunk_eta_fields() -> dict:
+    return {
+        "chunk_eta_sec": None,
+        "chunk_eta_at": None,
+        "chunk_finish_at": None,
+        "current_chunk_chars": None,
+    }
+
+
+@app.post("/api/materials/{material_id}/abort")
+def api_abort(material_id: str):
+    meta = mat.read_meta(material_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Material not found")
+
+    status = meta.get("status")
+    if status == "paused":
+        return {"id": material_id, "status": "paused", "active": False}
+    if status not in ("queued", "processing"):
+        raise HTTPException(status_code=409, detail=f"Cannot abort status {status}")
+
+    if wk.is_active(material_id):
+        mat.update_meta(material_id, stop_requested="abort")
+        wk.request_abort(material_id)
+        return {
+            "id": material_id,
+            "status": "processing",
+            "stop_requested": "abort",
+            "active": True,
+        }
+
+    mat.update_meta(
+        material_id,
+        status="paused",
+        stop_requested=None,
+        **_clear_chunk_eta_fields(),
+    )
+    return {"id": material_id, "status": "paused", "active": False}
 
 
 @app.post("/api/materials/{material_id}/pause")
@@ -258,8 +329,16 @@ def api_pause(material_id: str):
         mat.update_meta(material_id, status="paused", stop_requested=None)
         return {"id": material_id, "status": "paused"}
     if status == "processing":
-        mat.update_meta(material_id, stop_requested="pause")
-        return {"id": material_id, "status": "processing", "stop_requested": "pause"}
+        if wk.is_active(material_id):
+            mat.update_meta(material_id, stop_requested="pause")
+            return {
+                "id": material_id,
+                "status": "processing",
+                "stop_requested": "pause",
+                "active": True,
+            }
+        mat.update_meta(material_id, status="paused", stop_requested=None)
+        return {"id": material_id, "status": "paused", "active": False}
     raise HTTPException(status_code=409, detail=f"Cannot pause status {status}")
 
 
@@ -270,6 +349,25 @@ def api_resume(material_id: str):
         raise HTTPException(status_code=404, detail="Material not found")
 
     status = meta.get("status")
+    stop = meta.get("stop_requested")
+
+    if status == "processing" and wk.is_active(material_id) and stop == "pause":
+        mat.update_meta(material_id, stop_requested=None)
+        return {"id": material_id, "status": "processing", "stop_requested": None}
+
+    if status == "processing" and not wk.is_active(material_id):
+        text_path = mat.material_dir(material_id) / mat.TEXT_NAME
+        if not text_path.is_file():
+            raise HTTPException(status_code=409, detail="Missing text.txt — generate first")
+        mat.update_meta(
+            material_id,
+            status="queued",
+            error=None,
+            stop_requested=None,
+        )
+        enqueue(material_id)
+        return {"id": material_id, "status": "queued"}
+
     if status not in ("paused", "error"):
         raise HTTPException(status_code=409, detail=f"Cannot resume status {status}")
 
@@ -295,8 +393,16 @@ def api_delete(material_id: str):
 
     status = meta.get("status")
     if status in ("queued", "processing"):
-        mat.update_meta(material_id, stop_requested="delete")
-        return {"id": material_id, "status": status, "stop_requested": "delete"}
+        if wk.is_active(material_id):
+            mat.update_meta(material_id, stop_requested="delete")
+            return {
+                "id": material_id,
+                "status": status,
+                "stop_requested": "delete",
+                "active": True,
+            }
+        mat.delete_material(material_id)
+        return {"id": material_id, "deleted": True, "active": False}
 
     mat.delete_material(material_id)
     return {"id": material_id, "deleted": True}

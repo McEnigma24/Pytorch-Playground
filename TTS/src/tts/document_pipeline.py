@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import shutil
 import time
@@ -107,14 +109,24 @@ def _chunk_cache_paths(cache_dir: Path, idx: int) -> tuple[Path, Path]:
     return cache_dir / f"{stem}.wav", cache_dir / f"{stem}.json"
 
 
+def _chunk_text_sha1(chunk_text: str) -> str:
+    return hashlib.sha1(chunk_text.encode("utf-8")).hexdigest()
+
+
 def _load_cached_chunk(
-    wav_path: Path, meta_path: Path
+    wav_path: Path,
+    meta_path: Path,
+    chunk_text: str | None = None,
 ) -> tuple[np.ndarray, int, list[ForcedAlignItem]] | None:
     if not wav_path.is_file() or not meta_path.is_file():
         return None
     try:
-        wav, sr = sf.read(wav_path, dtype="float32")
         payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        if chunk_text is not None:
+            expected = _chunk_text_sha1(chunk_text)
+            if payload.get("text_sha1") != expected:
+                return None
+        wav, sr = sf.read(wav_path, dtype="float32")
         items = [
             ForcedAlignItem(
                 text=w["text"],
@@ -134,10 +146,12 @@ def _save_cached_chunk(
     wav: np.ndarray,
     sr: int,
     items: list[ForcedAlignItem],
+    chunk_text: str,
 ) -> None:
     wav_path.parent.mkdir(parents=True, exist_ok=True)
     sf.write(wav_path, wav, sr)
     payload = {
+        "text_sha1": _chunk_text_sha1(chunk_text),
         "items": [
             {"text": w.text, "start_time": w.start_time, "end_time": w.end_time}
             for w in items
@@ -145,7 +159,9 @@ def _save_cached_chunk(
         ],
         "sample_rate": sr,
     }
-    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+    tmp = meta_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
+    os.replace(tmp, meta_path)
 
 
 def process_document(
@@ -161,6 +177,7 @@ def process_document(
     on_progress: Callable[[int, int], None] | None = None,
     on_chunk_done: Callable[[int, int, int, float, bool], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    abort_now: Callable[[], bool] | None = None,
     cache_dir: Path | None = None,
 ) -> PipelineResult:
     text = text.strip()
@@ -194,97 +211,114 @@ def process_document(
     time_offset = 0.0
     sr: int | None = None
 
-    for idx, chunk in enumerate(chunks):
-        if should_stop and should_stop():
+    def _check_abort() -> None:
+        if abort_now and abort_now():
             raise StopRequested()
 
-        if on_progress:
-            on_progress(idx + 1, len(chunks))
+    talker = qwen_model.model.talker
 
-        wav_path = meta_path = None
-        if cache_dir:
-            wav_path, meta_path = _chunk_cache_paths(cache_dir, idx)
-            cached = _load_cached_chunk(wav_path, meta_path)
-        else:
-            cached = None
+    def _talker_abort_hook(_module, _inputs) -> None:
+        _check_abort()
 
-        from_cache = cached is not None
-        elapsed_sec = 0.0
+    hook_handle = talker.register_forward_pre_hook(_talker_abort_hook)
 
-        if cached is not None:
-            wav, sample_rate, items = cached
-        else:
-            if use_cuda:
-                torch.cuda.synchronize()
+    try:
+        for idx, chunk in enumerate(chunks):
+            if should_stop and should_stop():
+                raise StopRequested()
+            _check_abort()
 
-            t0 = time.perf_counter()
-            wavs, sample_rate = qwen_model.generate_custom_voice(
-                text=chunk,
-                language=language,
-                speaker=speaker,
-                instruct=instruct_for_language(language),
-                temperature=TTS_TEMPERATURE,
-                subtalker_temperature=TTS_TEMPERATURE,
-            )
-            wav = np.asarray(wavs[0], dtype=np.float32)
+            if on_progress:
+                on_progress(idx + 1, len(chunks))
 
-            if use_cuda:
-                torch.cuda.synchronize()
+            wav_path = meta_path = None
+            if cache_dir:
+                wav_path, meta_path = _chunk_cache_paths(cache_dir, idx)
+                cached = _load_cached_chunk(wav_path, meta_path, chunk)
+            else:
+                cached = None
 
-            align_results = forced_aligner.align(
-                audio=(wav, sample_rate),
-                text=chunk,
-                language=language,
-            )
-            if use_cuda:
-                torch.cuda.synchronize()
-            elapsed_sec = time.perf_counter() - t0
+            from_cache = cached is not None
+            elapsed_sec = 0.0
 
-            items = [w for w in align_results[0].items if w.text.strip()]
+            if cached is not None:
+                wav, sample_rate, items = cached
+            else:
+                if use_cuda:
+                    torch.cuda.synchronize()
 
-            if cache_dir and wav_path is not None and meta_path is not None:
-                _save_cached_chunk(wav_path, meta_path, wav, sample_rate, items)
-
-        if on_chunk_done:
-            on_chunk_done(idx + 1, len(chunks), len(chunk), elapsed_sec, from_cache)
-
-        if sr is None:
-            sr = sample_rate
-        elif sample_rate != sr:
-            raise ValueError(f"Sample rate mismatch: {sample_rate} vs {sr}")
-
-        for item in items:
-            all_items.append(
-                ForcedAlignItem(
-                    text=item.text,
-                    start_time=float(item.start_time) + time_offset,
-                    end_time=float(item.end_time) + time_offset,
+                t0 = time.perf_counter()
+                wavs, sample_rate = qwen_model.generate_custom_voice(
+                    text=chunk,
+                    language=language,
+                    speaker=speaker,
+                    instruct=instruct_for_language(language),
+                    temperature=TTS_TEMPERATURE,
+                    subtalker_temperature=TTS_TEMPERATURE,
                 )
-            )
+                wav = np.asarray(wavs[0], dtype=np.float32)
 
-        all_audio.append(wav)
-        chunk_dur = len(wav) / float(sample_rate)
-        time_offset += chunk_dur
+                if use_cuda:
+                    torch.cuda.synchronize()
+                _check_abort()
 
-        if idx + 1 < len(chunks):
-            silence = np.zeros(int(INTER_CHUNK_SILENCE_SEC * sample_rate), dtype=np.float32)
-            all_audio.append(silence)
-            time_offset += INTER_CHUNK_SILENCE_SEC
+                align_results = forced_aligner.align(
+                    audio=(wav, sample_rate),
+                    text=chunk,
+                    language=language,
+                )
+                if use_cuda:
+                    torch.cuda.synchronize()
+                elapsed_sec = time.perf_counter() - t0
+                _check_abort()
 
-    assert sr is not None
-    merged = np.concatenate(all_audio)
-    duration_sec = len(merged) / float(sr)
+                items = [w for w in align_results[0].items if w.text.strip()]
 
-    out_wav.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(out_wav, merged, sr)
-    write_webvtt_word_aligned(out_vtt, all_items)
+                if cache_dir and wav_path is not None and meta_path is not None:
+                    _save_cached_chunk(wav_path, meta_path, wav, sample_rate, items, chunk)
 
-    if cache_dir and cache_dir.is_dir():
-        shutil.rmtree(cache_dir)
+            if on_chunk_done:
+                on_chunk_done(idx + 1, len(chunks), len(chunk), elapsed_sec, from_cache)
 
-    return PipelineResult(
-        wav_path=out_wav,
-        vtt_path=out_vtt,
-        duration_sec=duration_sec,
-        chunk_count=len(chunks),
-    )
+            if sr is None:
+                sr = sample_rate
+            elif sample_rate != sr:
+                raise ValueError(f"Sample rate mismatch: {sample_rate} vs {sr}")
+
+            for item in items:
+                all_items.append(
+                    ForcedAlignItem(
+                        text=item.text,
+                        start_time=float(item.start_time) + time_offset,
+                        end_time=float(item.end_time) + time_offset,
+                    )
+                )
+
+            all_audio.append(wav)
+            chunk_dur = len(wav) / float(sample_rate)
+            time_offset += chunk_dur
+
+            if idx + 1 < len(chunks):
+                silence = np.zeros(int(INTER_CHUNK_SILENCE_SEC * sample_rate), dtype=np.float32)
+                all_audio.append(silence)
+                time_offset += INTER_CHUNK_SILENCE_SEC
+
+        assert sr is not None
+        merged = np.concatenate(all_audio)
+        duration_sec = len(merged) / float(sr)
+
+        out_wav.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(out_wav, merged, sr)
+        write_webvtt_word_aligned(out_vtt, all_items)
+
+        if cache_dir and cache_dir.is_dir():
+            shutil.rmtree(cache_dir)
+
+        return PipelineResult(
+            wav_path=out_wav,
+            vtt_path=out_vtt,
+            duration_sec=duration_sec,
+            chunk_count=len(chunks),
+        )
+    finally:
+        hook_handle.remove()

@@ -16,6 +16,7 @@ const btnNew = document.getElementById("btn-new");
 let listPollTimer = null;
 let etaTickTimer = null;
 let lastListItems = [];
+let listActionInFlight = false;
 let readerState = null;
 let listLoadGeneration = 0;
 /** @type {"list"|"new"|"edit"|"read"} */
@@ -114,25 +115,95 @@ function clearPoll() {
 
 function formatDuration(sec) {
   if (sec == null || Number.isNaN(sec)) return "—";
-  const rounded = Math.max(0, Math.round(sec));
-  const m = Math.floor(rounded / 60);
-  const s = rounded % 60;
-  if (m > 0) return `ok. ${m} min ${s} s`;
-  return `ok. ${s} s`;
+  const totalMin = Math.max(0, Math.ceil(sec / 60));
+  const d = Math.floor(totalMin / (24 * 60));
+  const h = Math.floor((totalMin % (24 * 60)) / 60);
+  const m = totalMin % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(d)}d - ${pad(h)}h - ${pad(m)}m`;
 }
 
-function etaDisplayForMaterial(m, nowMs = Date.now()) {
-  if (!["queued", "processing"].includes(m.status)) return "";
-  if (m.status === "queued" && m.eta_sec != null) {
-    return `szacowany czas ${formatDuration(m.eta_sec)}`;
+function countdownRemaining(etaSec, etaAt, nowMs = Date.now()) {
+  if (etaSec == null) return null;
+  let rem = etaSec;
+  if (etaAt) rem -= (nowMs - new Date(etaAt).getTime()) / 1000;
+  return Math.max(0, rem);
+}
+
+function projectedFinishMs(etaSec, etaAt, finishAt, nowMs = Date.now()) {
+  if (finishAt) {
+    const skew = etaAt ? nowMs - new Date(etaAt).getTime() : 0;
+    return new Date(finishAt).getTime() + skew;
   }
-  if (m.status === "processing" && m.eta_sec != null) {
-    let rem = m.eta_sec;
-    if (m.eta_at) rem -= (nowMs - new Date(m.eta_at).getTime()) / 1000;
-    if (rem <= 0) return "kończę bieżący kawałek…";
-    return `pozostało ${formatDuration(rem)}`;
+  const rem = countdownRemaining(etaSec, etaAt, nowMs);
+  if (rem == null) return null;
+  return nowMs + rem * 1000;
+}
+
+function formatFinishClock(whenMs, nowMs = Date.now()) {
+  const date = new Date(whenMs);
+  const now = new Date(nowMs);
+  const pad = (n) => String(n).padStart(2, "0");
+  const clock = `${pad(date.getHours())}h-${pad(date.getMinutes())}m`;
+  if (date.toDateString() === now.toDateString()) {
+    return clock;
   }
-  return "";
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (date.toDateString() === tomorrow.toDateString()) {
+    return `jutro ${clock}`;
+  }
+  return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}. ${clock}`;
+}
+
+function etaLinesForMaterial(m, nowMs = Date.now()) {
+  if (!["queued", "processing"].includes(m.status)) return [];
+  if (m.status === "queued") {
+    return ["estymacja po pierwszym fragmencie"];
+  }
+  if (m.status !== "processing") return [];
+
+  const lines = [];
+  const chunkRem = countdownRemaining(m.chunk_eta_sec, m.chunk_eta_at, nowMs);
+  if (chunkRem != null && chunkRem > 0) {
+    const n = m.progress ? String(m.progress).split("/")[0] : "?";
+    lines.push(`kawałek ${n}: ${formatDuration(chunkRem)}`);
+  }
+
+  const totalRem = countdownRemaining(m.eta_sec, m.eta_at, nowMs);
+  if (totalRem != null && totalRem > 0) {
+    lines.push(`całość: ${formatDuration(totalRem)}`);
+  }
+
+  if (!lines.length) {
+    if (m.chunk_eta_sec == null && m.eta_sec == null) {
+      return ["estymacja po pierwszym fragmencie"];
+    }
+    return ["kończę bieżący kawałek…"];
+  }
+
+  const chunkFinishMs = projectedFinishMs(
+    m.chunk_eta_sec,
+    m.chunk_eta_at,
+    m.chunk_finish_at,
+    nowMs
+  );
+  if (chunkRem != null && chunkRem > 0 && chunkFinishMs != null) {
+    lines.push(`koniec kawałku: ${formatFinishClock(chunkFinishMs, nowMs)}`);
+  }
+
+  const totalFinishMs = projectedFinishMs(m.eta_sec, m.eta_at, m.eta_finish_at, nowMs);
+  if (totalRem != null && totalRem > 0 && totalFinishMs != null) {
+    lines.push(`koniec całości: ${formatFinishClock(totalFinishMs, nowMs)}`);
+  }
+
+  return lines;
+}
+
+function etaBlockInnerHtml(m, nowMs = Date.now()) {
+  const lines = etaLinesForMaterial(m, nowMs);
+  if (!lines.length) return "";
+  return lines.map((ln) => `<p class="meta eta-line">${escapeHtml(ln)}</p>`).join("");
 }
 
 function progressSectionHtml(m) {
@@ -140,19 +211,19 @@ function progressSectionHtml(m) {
   const done = m.chars_done ?? 0;
   if (!total || !["queued", "processing", "paused"].includes(m.status)) return "";
   const pct = Math.min(100, Math.round((done / Math.max(1, total)) * 100));
-  const eta = etaDisplayForMaterial(m);
+  const etaBlock = etaBlockInnerHtml(m);
   return `
         <div class="progress-wrap" aria-hidden="true">
           <div class="progress-bar" style="width:${pct}%"></div>
         </div>
-        ${eta ? `<p class="meta eta-countdown" data-id="${escapeHtml(m.id)}">${escapeHtml(eta)}</p>` : ""}`;
+        ${etaBlock ? `<div class="eta-countdown" data-id="${escapeHtml(m.id)}">${etaBlock}</div>` : ""}`;
 }
 
 function refreshEtaLabels() {
   for (const el of document.querySelectorAll(".eta-countdown")) {
     const id = el.dataset.id;
     const m = lastListItems.find((x) => x.id === id);
-    if (m) el.textContent = etaDisplayForMaterial(m);
+    if (m) el.innerHTML = etaBlockInnerHtml(m);
   }
 }
 
@@ -334,6 +405,42 @@ function rangesForLine(cueIndex, cueStarts, cueEnds, streamPos) {
   return ranges;
 }
 
+async function renderPdfPages(pdf, pagesEl, pageFrom, pageTo, scale = PDF_SCALE) {
+  const pageEls = [];
+  const last = Math.min(pageTo, pdf.numPages);
+  for (let pageNum = pageFrom; pageNum <= last; pageNum += 1) {
+    const page = await pdf.getPage(pageNum);
+    const viewport = page.getViewport({ scale });
+
+    const pageWrap = document.createElement("div");
+    pageWrap.className = "pdf-page";
+    pageWrap.dataset.page = String(pageNum);
+    pageWrap.style.setProperty("--scale-factor", String(viewport.scale));
+
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+
+    const textLayerDiv = document.createElement("div");
+    textLayerDiv.className = "textLayer";
+
+    pageWrap.append(canvas, textLayerDiv);
+    pagesEl.appendChild(pageWrap);
+    pageEls.push(pageWrap);
+
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    const textContent = await page.getTextContent();
+    const textLayer = new TextLayer({
+      textContentSource: textContent,
+      container: textLayerDiv,
+      viewport,
+    });
+    await textLayer.render();
+  }
+  return pageEls;
+}
+
 async function fetchMaterials() {
   const res = await fetch("/api/materials");
   if (!res.ok) throw new Error(`API ${res.status}`);
@@ -388,6 +495,7 @@ async function apiDelete(id) {
 function showList() {
   clearPoll();
   activeView = "list";
+  listActionInFlight = false;
   const generation = ++listLoadGeneration;
   appEl.innerHTML = `<p class="empty">Ładowanie listy…</p>`;
   loadList(generation);
@@ -396,6 +504,7 @@ function showList() {
 
 async function loadList(generation) {
   if (generation !== listLoadGeneration || activeView !== "list") return;
+  if (listActionInFlight) return;
 
   try {
     const items = await fetchMaterials();
@@ -423,7 +532,14 @@ async function loadList(generation) {
       card.className = "card";
       const progress = m.progress ? ` · ${m.progress}` : "";
       const dur = m.duration_sec != null ? ` · ${m.duration_sec.toFixed(1)} s` : "";
-      const stopping = m.stop_requested ? " · zatrzymywanie…" : "";
+      const stopping =
+        m.stop_requested === "pause" && m.active
+          ? " · wstrzymam po bieżącym fragmencie…"
+          : m.stop_requested === "abort" && m.active
+            ? " · zatrzymuję…"
+            : m.stop_requested === "delete"
+              ? " · usuwam po bieżącym fragmencie…"
+              : "";
       const hint = STATUS_HINT[m.status] || "";
       card.innerHTML = `
         <h2>${escapeHtml(m.title)}</h2>
@@ -432,12 +548,31 @@ async function loadList(generation) {
         </div>
         ${hint ? `<p class="meta">${escapeHtml(hint)}</p>` : ""}
         ${progressSectionHtml(m)}
+        <p class="message card-error" hidden role="alert"></p>
         <div class="card-actions" data-id="${escapeHtml(m.id)}"></div>`;
       if (m.status === "error" && m.error) {
         card.innerHTML += `<p class="meta">${escapeHtml(String(m.error).split("\n")[0])}</p>`;
       }
 
       const actions = card.querySelector(".card-actions");
+      const errEl = card.querySelector(".card-error");
+
+      async function runCardAction(fn) {
+        listActionInFlight = true;
+        try {
+          await fn();
+          listActionInFlight = false;
+          await loadList(listLoadGeneration);
+        } catch (e) {
+          if (errEl) {
+            errEl.hidden = false;
+            errEl.textContent = String(e.message || e);
+          }
+        } finally {
+          listActionInFlight = false;
+        }
+      }
+
       if (m.status === "ready") {
         actions.append(makeBtn("Otwórz", () => navigateTo({ view: "reader", id: m.id })));
       }
@@ -445,28 +580,51 @@ async function loadList(generation) {
         actions.append(makeBtn("Edytuj", () => navigateTo({ view: "edit", id: m.id })));
       }
       if (["queued", "processing"].includes(m.status)) {
-        actions.append(
-          makeBtn(m.stop_requested ? "Zatrzymywanie…" : "Zatrzymaj", async () => {
-            await apiPost(`/api/materials/${encodeURIComponent(m.id)}/pause`);
-            loadList(listLoadGeneration);
-          }, m.stop_requested)
-        );
+        const askStopNow = () => {
+          if (
+            !confirm(
+              "Bieżący kawałek zostanie porzucony. Gotowe kawałki zostają — Wznów zacznie od następnego kawałka."
+            )
+          ) {
+            return;
+          }
+          return runCardAction(() =>
+            apiPost(`/api/materials/${encodeURIComponent(m.id)}/abort`)
+          );
+        };
+        if (m.stop_requested === "pause" && m.active) {
+          actions.append(
+            makeBtn("Anuluj wstrzymanie", () =>
+              runCardAction(() => apiPost(`/api/materials/${encodeURIComponent(m.id)}/resume`))
+            )
+          );
+          actions.append(makeBtn("Zatrzymaj natychmiast", askStopNow, false, "danger"));
+        } else if (!m.stop_requested) {
+          actions.append(
+            makeBtn("Wstrzymaj", () =>
+              runCardAction(() => apiPost(`/api/materials/${encodeURIComponent(m.id)}/pause`))
+            )
+          );
+        }
       }
       if (["paused", "error"].includes(m.status)) {
         actions.append(
-          makeBtn("Wznów", async () => {
-            await apiPost(`/api/materials/${encodeURIComponent(m.id)}/resume`);
-            loadList(listLoadGeneration);
-          })
+          makeBtn("Wznów", () =>
+            runCardAction(() => apiPost(`/api/materials/${encodeURIComponent(m.id)}/resume`))
+          )
         );
         actions.append(makeBtn("Edytuj tekst", () => navigateTo({ view: "edit", id: m.id })));
       }
       actions.append(
-        makeBtn("Usuń", async () => {
-          if (!confirm(`Usunąć „${m.title}"?`)) return;
-          await apiDelete(m.id);
-          loadList(listLoadGeneration);
-        }, false, "danger")
+        makeBtn(
+          "Usuń",
+          () => {
+            if (!confirm(`Usunąć „${m.title}"?`)) return;
+            return runCardAction(() => apiDelete(m.id));
+          },
+          false,
+          "danger"
+        )
       );
 
       grid.appendChild(card);
@@ -484,9 +642,15 @@ function makeBtn(label, onClick, disabled = false, extraClass = "") {
   b.className = `btn sm ${extraClass}`.trim();
   b.textContent = label;
   b.disabled = !!disabled;
-  b.addEventListener("click", (ev) => {
+  b.addEventListener("click", async (ev) => {
     ev.stopPropagation();
-    onClick();
+    if (b.disabled) return;
+    b.disabled = true;
+    try {
+      await onClick();
+    } finally {
+      b.disabled = false;
+    }
   });
   return b;
 }
@@ -522,11 +686,21 @@ async function showNew() {
         <input type="text" name="title" id="title-input" autocomplete="off" placeholder="Attention Free Transformer" />
       </label>
       <p class="meta">ID zasobu: <span class="mono" id="id-preview">—</span></p>
-      <label>Plik PDF
-        <input type="file" name="pdf" id="pdf-input" accept="application/pdf" required />
-      </label>
+      <fieldset>
+        <legend>Źródło PDF</legend>
+        <p class="meta">Wybierz plik albo wklej link — wystarczy jedno. Serwer sprawdza, że to PDF.</p>
+        <div class="source-row">
+          <label>Plik PDF
+            <input type="file" name="pdf" id="pdf-input" accept="application/pdf" />
+          </label>
+          <span class="source-or" aria-hidden="true">lub</span>
+          <label>Link do PDF (http/https)
+            <input type="url" name="pdf_url" id="pdf-url-input" inputmode="url" placeholder="https://…/paper.pdf" autocomplete="off" />
+          </label>
+        </div>
+      </fieldset>
       <fieldset id="pages-fieldset" disabled>
-        <legend>Zakres stron (po wyborze pliku)</legend>
+        <legend>Zakres stron</legend>
         <div class="row-2">
           <label>Od
             <input type="number" id="page-from" min="1" value="1" />
@@ -535,7 +709,7 @@ async function showNew() {
             <input type="number" id="page-to" min="1" value="1" />
           </label>
         </div>
-        <p class="meta" id="page-hint">Wybierz PDF, żeby ustawić liczbę stron.</p>
+        <p class="meta" id="page-hint">Wybierz plik lub podaj link — liczba stron pojawi się przed ekstrakcją.</p>
       </fieldset>
       <fieldset>
         <legend>Filtry tekstu</legend>
@@ -548,6 +722,7 @@ async function showNew() {
   const titleInput = document.getElementById("title-input");
   const idPreview = document.getElementById("id-preview");
   const pdfInput = document.getElementById("pdf-input");
+  const pdfUrlInput = document.getElementById("pdf-url-input");
   const pagesFieldset = document.getElementById("pages-fieldset");
   const pageFrom = document.getElementById("page-from");
   const pageTo = document.getElementById("page-to");
@@ -556,17 +731,44 @@ async function showNew() {
 
   let localNumPages = null;
 
+  function titleFromUrl(url) {
+    try {
+      const u = new URL(url.trim());
+      const base = u.pathname.split("/").filter(Boolean).pop() || "";
+      return base.replace(/\.pdf$/i, "");
+    } catch {
+      return "";
+    }
+  }
+
   function refreshId() {
     let t = titleInput.value.trim();
     if (!t && pdfInput.files?.[0]) {
       t = pdfInput.files[0].name.replace(/\.pdf$/i, "");
+    }
+    if (!t && pdfUrlInput.value.trim()) {
+      t = titleFromUrl(pdfUrlInput.value);
     }
     idPreview.textContent = sanitizeTitlePreview(t);
   }
 
   titleInput.addEventListener("input", refreshId);
 
+  pdfUrlInput.addEventListener("input", () => {
+    if (pdfUrlInput.value.trim()) {
+      pdfInput.value = "";
+      localNumPages = null;
+      pagesFieldset.disabled = true;
+      pageHint.textContent =
+        "Po pobraniu z linku ustawimy liczbę stron — przed ekstrakcją możesz zmienić zakres.";
+    }
+    refreshId();
+  });
+
   pdfInput.addEventListener("change", async () => {
+    if (pdfInput.files?.[0]) {
+      pdfUrlInput.value = "";
+    }
     refreshId();
     const file = pdfInput.files?.[0];
     if (!file) return;
@@ -592,27 +794,50 @@ async function showNew() {
 
   document.getElementById("new-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    const fd = new FormData(ev.target);
-    const pdf = fd.get("pdf");
-    if (!(pdf instanceof File) || !pdf.size) {
-      statusEl.textContent = "Wybierz PDF.";
-      return;
-    }
     const submitBtn = document.getElementById("new-submit");
-    submitBtn.disabled = true;
-
     const filterEls = document.querySelectorAll('input[name="filter"]:checked');
     const filtersSelected = [...filterEls].map((el) => el.value);
-    const page_from = Number(pageFrom.value) || 1;
-    const page_to = Number(pageTo.value) || localNumPages || 1;
+
+    const pdf = pdfInput.files?.[0];
+    const pdfUrl = pdfUrlInput.value.trim();
+    const hasFile = !!(pdf?.size);
+    const hasUrl = /^https?:\/\//i.test(pdfUrl);
+    if (hasFile === hasUrl) {
+      statusEl.textContent = "Wybierz plik PDF albo wklej link (nie oba naraz).";
+      return;
+    }
+
+    const fd = new FormData();
+    const title = titleInput.value.trim();
+    if (title) fd.append("title", title);
+    if (hasFile) fd.append("pdf", pdf);
+    else fd.append("pdf_url", pdfUrl);
+
+    submitBtn.disabled = true;
 
     try {
-      statusEl.textContent = "1/3 Wgrywanie PDF na serwer…";
+      statusEl.textContent = hasUrl
+        ? "1/3 Pobieranie PDF z linku…"
+        : "1/3 Wgrywanie PDF na serwer…";
       const res = await fetch("/api/materials", { method: "POST", body: fd });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(formatApiError(body, res.statusText));
 
       const numPages = body.num_pages;
+      localNumPages = numPages;
+      pagesFieldset.disabled = false;
+      pageFrom.min = "1";
+      pageFrom.max = String(numPages);
+      pageTo.min = "1";
+      pageTo.max = String(numPages);
+      if (!pageTo.value || Number(pageTo.value) === 1) {
+        pageTo.value = String(numPages);
+      }
+      pageHint.textContent = `Materiał ma ${numPages} stron (numeracja od 1).`;
+
+      let page_from = Number(pageFrom.value) || 1;
+      let page_to = Number(pageTo.value) || numPages;
+      page_from = Math.max(1, Math.min(page_from, numPages));
       const clampedTo = Math.min(page_to, numPages);
       statusEl.textContent = `2/3 Ekstrakcja tekstu (strony ${page_from}–${clampedTo})…`;
 
@@ -754,24 +979,12 @@ async function showEdit(materialId) {
   const statusEl = document.getElementById("edit-status");
   const statsEl = document.getElementById("text-stats");
 
-  let secPerCharPrior = null;
-  try {
-    const stats = await fetchStats();
-    secPerCharPrior = stats.sec_per_char_prior;
-  } catch {
-    /* ignore */
-  }
-
   function updateStats() {
     if (!editor) return;
     const t = editor.value;
     const words = t.trim() ? t.trim().split(/\s+/).length : 0;
     const chunks = Math.max(1, Math.ceil(t.length / CHUNK_CHARS));
-    let line = `${t.length} znaków · ${words} słów · ~${chunks} kawałków TTS`;
-    if (secPerCharPrior && t.length > 0) {
-      line += ` · szac. generacja ${formatDuration(t.length * secPerCharPrior)}`;
-    }
-    statsEl.textContent = line;
+    statsEl.textContent = `${t.length} znaków · ${words} słów · ~${chunks} kawałków TTS`;
   }
 
   if (editor) {
@@ -967,38 +1180,7 @@ async function showReader(materialId) {
   const cues = parseVtt(vttText);
 
   const pagesEl = document.getElementById("pdf-pages");
-  const pageEls = [];
-
-  for (let pageNum = pageFrom; pageNum <= Math.min(pageTo, pdf.numPages); pageNum += 1) {
-    const page = await pdf.getPage(pageNum);
-    const viewport = page.getViewport({ scale: PDF_SCALE });
-
-    const pageWrap = document.createElement("div");
-    pageWrap.className = "pdf-page";
-    pageWrap.dataset.page = String(pageNum);
-    pageWrap.style.setProperty("--scale-factor", String(viewport.scale));
-
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d");
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-
-    const textLayerDiv = document.createElement("div");
-    textLayerDiv.className = "textLayer";
-
-    pageWrap.append(canvas, textLayerDiv);
-    pagesEl.appendChild(pageWrap);
-    pageEls.push(pageWrap);
-
-    await page.render({ canvasContext: ctx, viewport }).promise;
-    const textContent = await page.getTextContent();
-    const textLayer = new TextLayer({
-      textContentSource: textContent,
-      container: textLayerDiv,
-      viewport,
-    });
-    await textLayer.render();
-  }
+  const pageEls = await renderPdfPages(pdf, pagesEl, pageFrom, pageTo, PDF_SCALE);
 
   const { keyStream, streamPos } = buildCharStream(pageEls);
   const { cueStarts, cueEnds, coverage, mappedCues, totalCues } = alignCuesToStream(

@@ -28,6 +28,7 @@ AUTHOR_AFFIL_RE = re.compile(
 URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w.-]+\.\w+\b")
 PAGE_NUM_LINE_RE = re.compile(r"^\s*\d+\s*$", re.MULTILINE)
+_RULE_CHARS = set("-_=·.•‒–—―_＿\u2010\u2011\u2012\u2013\u2014\u2015\u2500\u2501")
 TABLE_CAPTION_RE = re.compile(
     r"(?i)^\s*(table|tabela)\s*\d+\s*[.:]?\s*.+$"
 )
@@ -48,6 +49,11 @@ FILTERS: list[FilterSpec] = [
     FilterSpec("urls_emails", "Usuń adresy URL i e-mail", True),
     FilterSpec("page_numbers", "Usuń linie z samym numerem strony", True),
     FilterSpec("repeated_lines", "Usuń powtarzające się linie (nagłówki/stopki)", True),
+    FilterSpec(
+        "page_bottom_rule",
+        "Usuń dopiski pod linią na dole strony (footnotes / preprint)",
+        True,
+    ),
     FilterSpec("dehyphenate", "Sklej wyrazy przeniesione myślnikiem na końcu linii", True),
     FilterSpec(
         "tables_label",
@@ -152,6 +158,84 @@ def _strip_author_block(text: str) -> str:
     if tail:
         return tail
     return kept_head or text
+
+
+def _is_horizontal_rule_line(line: str) -> bool:
+    stripped = line.strip()
+    if len(stripped) < 4:
+        return False
+    rule_count = sum(1 for ch in stripped if ch in _RULE_CHARS or ch.isspace())
+    if rule_count < len(stripped) * 0.7:
+        return False
+    non_space = [ch for ch in stripped if not ch.isspace()]
+    return len(non_space) >= 4 and all(ch in _RULE_CHARS for ch in non_space)
+
+
+def _strip_text_below_page_rule(page_text: str) -> str:
+    lines = page_text.splitlines()
+    last_rule: int | None = None
+    for i, line in enumerate(lines):
+        if _is_horizontal_rule_line(line):
+            last_rule = i
+    if last_rule is None:
+        return page_text
+    below = [ln for ln in lines[last_rule + 1 :] if ln.strip()]
+    if not below:
+        return page_text
+    return "\n".join(lines[:last_rule]).rstrip()
+
+
+def _find_bottom_rule_y(page: pymupdf.Page) -> float | None:
+    page_h = float(page.rect.height)
+    page_w = float(page.rect.width)
+    min_y = page_h * 0.45
+    min_width = page_w * 0.4
+    best_y: float | None = None
+
+    try:
+        drawings = page.get_drawings()
+    except (RuntimeError, ValueError):
+        drawings = []
+
+    for path in drawings:
+        for item in path.get("items", []):
+            op = item[0]
+            if op != "l":
+                continue
+            p0, p1 = item[1], item[2]
+            if abs(float(p0.y) - float(p1.y)) > 2.0:
+                continue
+            y = (float(p0.y) + float(p1.y)) / 2.0
+            width = abs(float(p1.x) - float(p0.x))
+            if y < min_y or width < min_width:
+                continue
+            if best_y is None or y > best_y:
+                best_y = y
+    return best_y
+
+
+def _extract_page_text_below_rule(page: pymupdf.Page, y_rule: float) -> str:
+    margin = 4.0
+    cutoff = y_rule - margin
+    blocks = [b for b in page.get_text("blocks") if b[6] == 0]
+    blocks.sort(key=lambda b: (b[1], b[0]))
+    parts: list[str] = []
+    for b in blocks:
+        if float(b[3]) <= cutoff:
+            text = (b[4] or "").strip()
+            if text:
+                parts.append(text)
+    return "\n\n".join(parts)
+
+
+def _apply_page_bottom_rule(page: pymupdf.Page, page_text: str) -> str:
+    stripped = _strip_text_below_page_rule(page_text)
+    if stripped != page_text:
+        return stripped
+    y_rule = _find_bottom_rule_y(page)
+    if y_rule is None:
+        return page_text
+    return _extract_page_text_below_rule(page, y_rule)
 
 
 def _filter_repeated_lines_on_pages(page_texts: list[str]) -> list[str]:
@@ -342,9 +426,13 @@ def extract_text_from_pdf(
 
         table_counter = [0]
         page_texts: list[str] = []
+        strip_bottom = "page_bottom_rule" in active
         for page_idx in range(page_from - 1, last):
             page = doc[page_idx]
-            page_texts.append(_extract_page_text(page, table_mode, table_counter, language))
+            text = _extract_page_text(page, table_mode, table_counter, language)
+            if strip_bottom:
+                text = _apply_page_bottom_rule(page, text)
+            page_texts.append(text)
 
         if "repeated_lines" in active:
             page_texts = _filter_repeated_lines_on_pages(page_texts)
