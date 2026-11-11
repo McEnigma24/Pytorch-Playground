@@ -580,25 +580,21 @@ async function loadList(generation) {
         actions.append(makeBtn("Edytuj", () => navigateTo({ view: "edit", id: m.id })));
       }
       if (["queued", "processing"].includes(m.status)) {
-        const askStopNow = () => {
-          if (
-            !confirm(
-              "Bieżący kawałek zostanie porzucony. Gotowe kawałki zostają — Wznów zacznie od następnego kawałka."
-            )
-          ) {
-            return;
-          }
-          return runCardAction(() =>
-            apiPost(`/api/materials/${encodeURIComponent(m.id)}/abort`)
-          );
-        };
+        const stopNow = () =>
+          runCardAction(async () => {
+            try {
+              await apiPost(`/api/materials/${encodeURIComponent(m.id)}/abort`);
+            } catch (e) {
+              if (!String(e.message || e).includes("paused")) throw e;
+            }
+          });
         if (m.stop_requested === "pause" && m.active) {
           actions.append(
             makeBtn("Anuluj wstrzymanie", () =>
               runCardAction(() => apiPost(`/api/materials/${encodeURIComponent(m.id)}/resume`))
             )
           );
-          actions.append(makeBtn("Zatrzymaj natychmiast", askStopNow, false, "danger"));
+          actions.append(makeBtn("Zatrzymaj natychmiast", stopNow, false, "danger"));
         } else if (!m.stop_requested) {
           actions.append(
             makeBtn("Wstrzymaj", () =>

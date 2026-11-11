@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import threading
@@ -82,7 +83,9 @@ def read_meta(material_id: str) -> dict[str, Any] | None:
 def write_meta(material_id: str, meta: dict[str, Any]) -> None:
     path = material_dir(material_id) / META_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def update_meta(material_id: str, **fields: Any) -> dict[str, Any]:
