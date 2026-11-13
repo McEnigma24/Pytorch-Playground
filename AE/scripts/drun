@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Serwisowe komendy z hosta (bez publikacji portów — można przy otwartym ./shell.sh).
+#
+#   ./scripts/drun sync
+#   ./scripts/drun lock
+#   ./scripts/drun verify
+#   ./scripts/drun clean
+#   ./scripts/drun run python -c "..."
+#
+# GPU: ML_TEMPLATE_GPU=0|1|auto
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+# shellcheck source=scripts/_compose_env.sh
+source "${ROOT}/scripts/_compose_env.sh"
+
+run_dev() {
+  "${COMPOSE[@]}" run --rm dev "$@"
+}
+
+register_kernel() {
+  run_dev uv run python -m ipykernel install --sys-prefix \
+    --name "${KERNEL_NAME}" \
+    --display-name "${KERNEL_DISPLAY_NAME}"
+}
+
+if [[ "${1:-}" == "sync" ]]; then
+  shift
+  "${COMPOSE[@]}" run --rm dev uv sync "$@"
+  sync_rc=$?
+  register_kernel
+  exit $sync_rc
+fi
+
+if [[ "${1:-}" == "lock" ]]; then
+  shift
+  exec "${COMPOSE[@]}" run --rm dev uv lock "$@"
+fi
+
+if [[ "${1:-}" == "clean" ]]; then
+  if docker ps -a --format '{{.Names}}' | grep -qx "${SHELL_CONTAINER_NAME}"; then
+    echo "Zatrzymaj najpierw ./shell.sh (kontener ${SHELL_CONTAINER_NAME} działa)." >&2
+    exit 1
+  fi
+  "${COMPOSE[@]}" run --rm dev bash -c 'rm -rf /workspace/build /workspace/.venv'
+  echo "Usunięto build/ i .venv (w kontenerze)."
+  exit 0
+fi
+
+if [[ "${1:-}" == "verify" ]]; then
+  if [[ "$GPU_OK" -ne 1 ]]; then
+    echo "BŁĄD: brak GPU w Dockerze." >&2
+    echo "Uruchom: sudo ./_config_/first_time_init.sh" >&2
+    exit 1
+  fi
+  run_dev uv run python docker/verify_env.py
+  exit $?
+fi
+
+if [[ "${1:-}" == "run" ]]; then
+  shift
+  if [[ "$GPU_OK" -ne 1 ]]; then
+    echo "[drun] GPU niedostępne — kontener bez CUDA (ML_TEMPLATE_GPU=0)" >&2
+  fi
+  run_dev uv run "$@"
+  exit $?
+fi
+
+if [[ "$GPU_OK" -ne 1 ]]; then
+  echo "[drun] GPU niedostępne — kontener startuje bez CUDA (ML_TEMPLATE_GPU=0)" >&2
+fi
+
+run_dev uv "$@"

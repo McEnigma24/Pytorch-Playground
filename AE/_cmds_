@@ -1,0 +1,6 @@
+
+./start                              # nowy run
+./start latest                       # wznowienie z najnowszego runu danej architektury
+./start saved_models/rnnAWDLSTM/...  # wznowienie z konkretnego katalogu
+
+

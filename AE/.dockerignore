@@ -1,0 +1,16 @@
+# Bind-mount i tak widzi wszystko — .dockerignore dotyczy tylko kontekstu BUILD.
+# Obraz nie kopiuje kodu; ignorujemy ciężkie artefakty przy ewentualnym COPY w przyszłości.
+
+.git
+build/
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/.ipynb_checkpoints
+
+# Inne projekty / duże runy — nie wpływają na build, ale nie zaśmiecaj kontekstu
+UMISI-sem1-RL/**/runs/
+UMISI-sem1-RL/**/checkpoints/
+**/*.sif
+**/*.tar

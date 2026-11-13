@@ -1,0 +1,19 @@
+#!/bin/bash
+# Użycie:
+#   ./start                    — nowy run
+#   ./start latest             — wznowienie z najnowszego runu tej architektury (nowy katalog)
+#   ./start saved_models/...   — wznowienie z podanego katalogu runu
+#
+# Zmienna LANGUAGE_RNN_RESUME (latest lub ścieżka) — to samo co pierwszy argument.
+# Porównanie metryk (multi-line PNG): python src/metrics/plot_metrics.py
+
+set -euo pipefail
+
+clear
+
+export LANGUAGE_RNN_RESUME="${1:-}"
+unset LANGUAGE_RNN_CHECKPOINT
+
+    python src/main.py
+
+echo ""
