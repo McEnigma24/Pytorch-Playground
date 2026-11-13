@@ -15,9 +15,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/activate.sh"
 
-export LANGUAGE_RNN_RESUME="${1:-}"
-unset LANGUAGE_RNN_CHECKPOINT
+export AE_RESUME="${1:-${AE_RESUME:-}}"
+export LANGUAGE_RNN_RESUME="${AE_RESUME}"
+unset AE_SAVE_DIR LANGUAGE_RNN_CHECKPOINT
 
+export PYTHONPATH="${SCRIPT_DIR}/src${PYTHONPATH:+:$PYTHONPATH}"
 python src/main.py
 
 echo ""

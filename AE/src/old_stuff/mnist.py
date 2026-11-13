@@ -77,7 +77,7 @@ class SimpleNet(nn.Module):
         output_size: int,
     ):
         # Network Params #
-        # 
+        # aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         # można argmax, bez softMaxu -> to zmienia tylko skalę a nie to która
         # odpowiedź jest najlepsza
         self.cost_function = nn.CrossEntropyLoss()
@@ -157,16 +157,11 @@ class SimpleNet(nn.Module):
             ]
         )
 
-        self.train_ds = datasets.MNIST(
-    "/workspace/data/mnist",
-    train=True,
-    download=True,
-     transform=transform)
-        self.test_ds = datasets.MNIST(
-    "/workspace/data/mnist",
-    train=False,
-    download=True,
-     transform=transform)
+        from paths import project_root
+
+        mnist_root = str(project_root() / "data" / "mnist")
+        self.train_ds = datasets.MNIST(mnist_root, train=True, download=True, transform=transform)
+        self.test_ds = datasets.MNIST(mnist_root, train=False, download=True, transform=transform)
 
     def _data_loader(self, dataset, batch_size: int, shuffle: bool) -> DataLoader:
         # num_workers>0: osobne procesy składają batch w tle (główna pętla mniej czeka na I/O).

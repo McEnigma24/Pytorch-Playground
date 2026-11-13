@@ -24,8 +24,9 @@ SUMMARY_FILENAME = "model_summary.txt"
 
 
 def project_root() -> Path:
-    # .../Language_RNN/src/metrics/run_metrics.py → repo root (train.py uses parents[1] from src/)
-    return Path(__file__).resolve().parents[2]
+    from paths import project_root as repo_root
+
+    return repo_root()
 
 
 class RunMetricsLogger:

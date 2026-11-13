@@ -14,7 +14,8 @@ _RUN_DIR_SEP = "___"
 
 
 def project_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    # .../AE/src/paths/run_paths.py → repo root
+    return Path(__file__).resolve().parents[2]
 
 
 def _sanitize_run_tag(tag: str) -> str:
@@ -46,7 +47,9 @@ def resolve_save_dir(
     when: datetime | None = None,
     run_tag: str | None = None,
 ) -> Path:
-    env = os.environ.get("LANGUAGE_RNN_SAVE_DIR", "").strip()
+    env = os.environ.get("AE_SAVE_DIR", "").strip()
+    if not env:
+        env = os.environ.get("LANGUAGE_RNN_SAVE_DIR", "").strip()
     if env:
         root = Path(env)
     else:
@@ -163,5 +166,7 @@ def resolve_source_run_dir(architecture: str, resume: str) -> Path:
 def resolve_resume_from_env_or_arg(resume: str | None) -> str | None:
     if resume is not None and str(resume).strip():
         return str(resume).strip()
-    env = os.environ.get("LANGUAGE_RNN_RESUME", "").strip()
+    env = os.environ.get("AE_RESUME", "").strip()
+    if not env:
+        env = os.environ.get("LANGUAGE_RNN_RESUME", "").strip()
     return env or None

@@ -1,6 +1,8 @@
 
-./start                              # nowy run
-./start latest                       # wznowienie z najnowszego runu danej architektury
-./start saved_models/rnnAWDLSTM/...  # wznowienie z konkretnego katalogu
+./start
 
+# default_run=True w main.py albo Manual Stuff:
 
+# train.main(tensorboard_dir=run_dir, architecture="vanilla_ae", …)
+
+PYTHONPATH=src python -m metrics.plot_metrics
