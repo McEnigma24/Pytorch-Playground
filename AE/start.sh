@@ -11,9 +11,13 @@ set -euo pipefail
 
 clear
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/activate.sh"
+
 export LANGUAGE_RNN_RESUME="${1:-}"
 unset LANGUAGE_RNN_CHECKPOINT
 
-    python src/main.py
+python src/main.py
 
 echo ""

@@ -77,7 +77,7 @@ class SimpleNet(nn.Module):
         output_size: int,
     ):
         # Network Params #
-        # aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        # 
         # można argmax, bez softMaxu -> to zmienia tylko skalę a nie to która
         # odpowiedź jest najlepsza
         self.cost_function = nn.CrossEntropyLoss()
