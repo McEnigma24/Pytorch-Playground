@@ -67,21 +67,29 @@ def _max_epoch_in_checkpoints(checkpoints_dir: Path) -> int:
     return mx
 
 
-def _epochs_to_keep_after_training(
-    final_epoch: int, *, mod: int, tail_keep: int
-) -> set[int]:
-    if final_epoch < 1:
+def _checkpoint_mod_epochs(final_epoch: int, mod: int) -> set[int]:
+    """Reguła cykliczna: ep. 1 + każda wielokrotność mod (nie kasuje poza sobą)."""
+    if final_epoch < 1 or mod < 1:
         return set()
-    if mod < 1 or tail_keep < 1:
-        raise ValueError("checkpoint_prune_post_training_mod i _tail muszą być >= 1")
-    keep: set[int] = {1}
+    keep = {1}
     if mod > 1:
         keep.update(range(mod, final_epoch + 1, mod))
     else:
         keep.update(range(1, final_epoch + 1))
-    tail_start = max(1, final_epoch - tail_keep + 1)
-    keep.update(range(tail_start, final_epoch + 1))
     return keep
+
+
+def _checkpoint_tail_epochs(final_epoch: int, tail_keep: int) -> set[int]:
+    """Reguła ogona: ostatnie tail_keep epok (nie wyłącznie — łączy się z mod)."""
+    if final_epoch < 1 or tail_keep < 1:
+        return set()
+    tail_start = max(1, final_epoch - tail_keep + 1)
+    return set(range(tail_start, final_epoch + 1))
+
+
+def _checkpoint_may_delete(ep: int, mod_epochs: set[int], tail_epochs: set[int]) -> bool:
+    """Usuń tylko gdy obie reguły na to pozwalają (nie chroni mod i nie chroni tail)."""
+    return ep not in mod_epochs and ep not in tail_epochs
 
 
 def compact_epoch_checkpoints(
@@ -91,20 +99,23 @@ def compact_epoch_checkpoints(
     checkpoint_prune_post_training_mod: int,
     checkpoint_prune_post_training_tail: int,
 ) -> None:
-    """Po treningu: ep. 1, co mod, oraz ostatnie tail epok (reszta kasowana)."""
+    """Jeden przebieg: dla każdego pliku decyzja AND (usuń wyłącznie poza unią reguł)."""
     ckpt_dir = Path(save_dir) / "checkpoints"
     if final_epoch < 1 or not ckpt_dir.is_dir():
         return
     mod = checkpoint_prune_post_training_mod
     tail = checkpoint_prune_post_training_tail
-    keep_eps = _epochs_to_keep_after_training(final_epoch, mod=mod, tail_keep=tail)
+    if mod < 1 or tail < 1:
+        raise ValueError("checkpoint_prune_post_training_mod i _tail muszą być >= 1")
+    mod_epochs = _checkpoint_mod_epochs(final_epoch, mod)
+    tail_epochs = _checkpoint_tail_epochs(final_epoch, tail)
     removed = 0
     kept = 0
     for path in sorted(ckpt_dir.glob("epoch_*.pt")):
         ep = _epoch_from_checkpoint_path(path)
         if ep is None:
             continue
-        if ep in keep_eps:
+        if not _checkpoint_may_delete(ep, mod_epochs, tail_epochs):
             kept += 1
             continue
         path.unlink(missing_ok=True)
@@ -112,7 +123,7 @@ def compact_epoch_checkpoints(
     if removed:
         log_print(
             f"Checkpointy po treningu: zostało {kept} plików "
-            f"(ep. 1, co {mod} do {final_epoch}, tail {tail}) — usunięto {removed}"
+            f"(unia: ep.1 + co {mod} + tail {tail} do ep.{final_epoch}) — usunięto {removed}"
         )
 
 
