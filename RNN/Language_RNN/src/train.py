@@ -29,7 +29,9 @@ from metrics.plot_training import plot_training_run
 from metrics.run_metrics import RunMetricsLogger
 from log_print import log_print, tensorboard_run_dir
 from run_paths import (
-    prepare_resumed_run,
+    find_latest_run_dir,
+    latest_checkpoint,
+    resume_run_relocate,
     project_root,
     resolve_resume_from_env_or_arg,
     resolve_save_dir,
@@ -680,11 +682,13 @@ class LanguageModelNet(nn.Module):
         metrics_dir = (
             str(self.metrics_logger.save_dir) if self.metrics_logger is not None else None
         )
+        fit_max_epochs = max(0, epochs - start_epoch)
         run_cb = RunLogCallback(
             metrics_save_dir=metrics_dir,
             checkpoint_every=checkpoint_every,
             eval_every=eval_every,
             max_epochs_cap=epochs,
+            completed_epochs_at_resume=start_epoch,
             resume_best_eval=best_eval_loss,
         )
         callbacks = [
@@ -701,7 +705,7 @@ class LanguageModelNet(nn.Module):
                 else "auto"
             ),
             precision=prec,
-            max_epochs=epochs,
+            max_epochs=fit_max_epochs,
             max_time=timedelta(minutes=time_budget_min * 1.1),
             check_val_every_n_epoch=max(1, eval_every),
             enable_progress_bar=False,
@@ -1137,23 +1141,46 @@ def main(
     log_print(f"TensorBoard run: {tensorboard_dir}")
 
     resume_spec = resolve_resume_from_env_or_arg(resume)
+    if resume_spec == "latest":
+        try:
+            find_latest_run_dir(architecture)
+        except FileNotFoundError:
+            log_print(f"Brak wcześniejszego runu dla {architecture} — start od zera")
+            resume_spec = None
     save_env = os.environ.get("LANGUAGE_RNN_SAVE_DIR", "").strip()
     resumed_from: dict[str, str] | None = None
     ckpt_path: Path | None = None
+    train_prior_seconds = 0.0
 
-    if save_env:
+    if resume_spec:
+        source_run = resolve_source_run_dir(architecture, resume_spec)
+        log_print(f"Wznawiam z runu: {source_run}")
+        if save_env:
+            save_dir = Path(save_env).resolve()
+            if source_run != save_dir:
+                raise ValueError(
+                    "LANGUAGE_RNN_SAVE_DIR musi wskazywać ten sam katalog co resume "
+                    f"({source_run} ≠ {save_dir})"
+                )
+            save_dir, train_prior_seconds, ckpt_path = resume_run_relocate(
+                source_run, architecture, run_tag=run_tag, relocate=False
+            )
+        else:
+            save_dir, train_prior_seconds, ckpt_path = resume_run_relocate(
+                source_run, architecture, run_tag=run_tag
+            )
+        resumed_from = {
+            "run_dir": str(source_run),
+            "save_dir": str(save_dir),
+            "checkpoint": str(ckpt_path),
+        }
+    elif save_env:
         save_dir = Path(save_env)
     else:
         save_dir = resolve_save_dir(architecture, run_tag=run_tag)
 
     save_dir.mkdir(parents=True, exist_ok=True)
     (save_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
-
-    if resume_spec:
-        source_run = resolve_source_run_dir(architecture, resume_spec)
-        log_print(f"Wznawiam z runu: {source_run}")
-        ckpt_path = prepare_resumed_run(source_run, save_dir, architecture)
-        resumed_from = {"run_dir": str(source_run), "checkpoint": str(ckpt_path)}
 
     log_print(f"Katalog zapisu: {save_dir}")
     if ckpt_path:
@@ -1225,14 +1252,23 @@ def main(
             net, batch_size=batch_size, writer=writer, epoch=epochs
         )
         net.save_final(net, optimizer, epochs, eval_loss, eval_ppl, best_eval_loss)
-        train_total_seconds = time.perf_counter() - t_run0
+        train_segment_seconds = time.perf_counter() - t_run0
+        train_total_seconds = train_prior_seconds + train_segment_seconds
         metrics_logger.write_timing(
             train_total_seconds=train_total_seconds,
             epochs=epochs,
             start_epoch=start_epoch,
+            train_prior_seconds=train_prior_seconds,
+            train_segment_seconds=train_segment_seconds,
         )
         plot_training_run(save_dir)
-        log_print(f"Czas treningu: {train_total_seconds:.1f}s")
+        if train_prior_seconds > 0:
+            log_print(
+                f"Czas treningu: {train_total_seconds:.1f}s "
+                f"(wcześniej {train_prior_seconds:.1f}s + ta sesja {train_segment_seconds:.1f}s)"
+            )
+        else:
+            log_print(f"Czas treningu: {train_total_seconds:.1f}s")
         log_print(f"Best eval loss w runie: {best_eval_loss:.4f} (pliki {architecture}_best_eval.*)")
         final, _stats = net.generate(net, seed="W polskim", length=500, temperature=0.85)
         log_print("--- Ostateczna generacja (wagi final, nie best) ---")

@@ -194,6 +194,7 @@ class RunLogCallback(Callback):
         checkpoint_every: int,
         eval_every: int,
         max_epochs_cap: int,
+        completed_epochs_at_resume: int,
         metrics_save_dir: str | None = None,
         resume_best_eval: float = float("inf"),
     ) -> None:
@@ -203,6 +204,7 @@ class RunLogCallback(Callback):
         self.checkpoint_every = checkpoint_every
         self.eval_every = eval_every
         self.max_epochs_cap = max_epochs_cap
+        self.completed_epochs_at_resume = completed_epochs_at_resume
         self.best_eval_loss = resume_best_eval
         self._epoch_train_sum = 0.0
         self._epoch_train_n = 0
@@ -215,6 +217,10 @@ class RunLogCallback(Callback):
         self._last_eval_seconds = 0.0
         self._val_this_epoch = False
         self.last_optimizer: torch.optim.Optimizer | None = None
+
+    def _logical_epoch(self, trainer: pl.Trainer) -> int:
+        """Numer epoki w runie (1…); po resume = ukończone wcześniej + bieżąca pętla Lightning."""
+        return self.completed_epochs_at_resume + trainer.current_epoch + 1
 
     def on_fit_start(self, trainer: pl.Trainer, pl_module: LitLanguageModel) -> None:
         if trainer.is_global_zero and self.metrics_save_dir and self._metrics_logger is None:
@@ -232,8 +238,9 @@ class RunLogCallback(Callback):
         loader = trainer.train_dataloader
         n = len(loader) if loader is not None else 0
         bs = getattr(loader, "batch_size", "?")
+        ep = self._logical_epoch(trainer)
         log_print(
-            f"Epoka {trainer.current_epoch + 1}/{self.max_epochs_cap}: {n:,} batchy (batch_size={bs})"
+            f"Epoka {ep}/{self.max_epochs_cap}: {n:,} batchy (batch_size={bs})"
         )
 
     def on_train_batch_end(
@@ -270,7 +277,7 @@ class RunLogCallback(Callback):
         self._last_eval_loss = eval_loss
         self._last_eval_ppl = eval_ppl
         self._last_eval_seconds = time.perf_counter() - self._t_eval0
-        ep = trainer.current_epoch + 1
+        ep = self._logical_epoch(trainer)
         log_print(f"Val: loss={eval_loss:.4f}, eval_perplexity={eval_ppl_s}")
         _log_tb(
             trainer,
@@ -307,7 +314,7 @@ class RunLogCallback(Callback):
         train_seconds = time.perf_counter() - self._t_train0
         train_loss = _epoch_train_loss(trainer, self._epoch_train_sum, self._epoch_train_n)
         train_ppl, train_ppl_s = _perplexity_for_log(train_loss)
-        ep = trainer.current_epoch + 1
+        ep = self._logical_epoch(trainer)
         log_print(
             f"Epoka {ep}: loss={train_loss:.4f} train_perplexity={train_ppl_s} "
             f"({train_seconds:.1f}s train)"

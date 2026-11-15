@@ -108,11 +108,11 @@ DUAL3060_NANO: dict = {
 }
 
 DUAL3060_ALL: list[tuple[str, dict]] = [
-    ("rnnRNN", DUAL3060_RNN),
-    ("rnnGRU", DUAL3060_GRU),
-    ("rnnLSTM", DUAL3060_LSTM),
-    ("rnnAWDLSTM", DUAL3060_AWD),
-    ("transformer_miniLLaMA", DUAL3060_LLAMA),
+    # ("rnnRNN", DUAL3060_RNN),
+    # ("rnnGRU", DUAL3060_GRU),
+    # ("rnnLSTM", DUAL3060_LSTM),
+    # ("rnnAWDLSTM", DUAL3060_AWD),
+    # ("transformer_miniLLaMA", DUAL3060_LLAMA),
     ("transformer_GPT2small", DUAL3060_GPT2),
     ("transformer_nanoGPT", DUAL3060_NANO),
 ]

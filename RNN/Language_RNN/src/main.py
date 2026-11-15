@@ -91,7 +91,7 @@ if __name__ == "__main__":
 
     # TRAIN THEM ALL #
     for architecture, preset in DUAL3060_ALL:
-        train.main(tensorboard_dir=run_dir, architecture=architecture, **preset)
+        train.main(tensorboard_dir=run_dir, architecture=architecture, resume="latest", **preset)
 
     # train.main(tensorboard_dir=run_dir, architecture="rnnAWDLSTM", resume="latest", **preset)
 

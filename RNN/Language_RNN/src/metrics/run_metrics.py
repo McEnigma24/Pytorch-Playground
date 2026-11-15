@@ -23,6 +23,7 @@ METRICS_COLUMNS = (
 METRICS_FILENAME = "metrics.csv"
 META_FILENAME = "run_meta.json"
 SUMMARY_FILENAME = "model_summary.txt"
+RESUME_LIST_FILENAME = "resume_list.txt"
 
 
 def project_root() -> Path:
@@ -109,12 +110,19 @@ class RunMetricsLogger:
         train_total_seconds: float,
         epochs: int,
         start_epoch: int,
+        train_prior_seconds: float | None = None,
+        train_segment_seconds: float | None = None,
     ) -> None:
         payload = self.load_meta()
         if not payload:
             payload = {"run_id": self.save_dir.name}
         payload["finished_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
         payload["train_total_seconds"] = train_total_seconds
+        payload["run_id"] = self.save_dir.name
+        if train_prior_seconds is not None:
+            payload["train_prior_seconds"] = train_prior_seconds
+        if train_segment_seconds is not None:
+            payload["train_segment_seconds"] = train_segment_seconds
         payload["epochs"] = epochs
         payload["start_epoch"] = start_epoch
         self.meta_path.write_text(
