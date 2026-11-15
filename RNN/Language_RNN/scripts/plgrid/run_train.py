@@ -26,8 +26,14 @@ ALL_ARCH = (
     "transformer_GPT2small",
 )
 
+_CKPT_PRUNE = dict(
+    checkpoint_prune_post_training_mod=10,
+    checkpoint_prune_post_training_tail=5,
+)
+
 PRESETS: dict[str, dict] = {
     "smoke": dict(
+        **_CKPT_PRUNE,
         epochs=1,
         run_tag="smoke",
         eval_every=1,
@@ -43,6 +49,7 @@ PRESETS: dict[str, dict] = {
         batch_size=8,
     ),
     "grid125M": dict(
+        **_CKPT_PRUNE,
         epochs=10,
         run_tag="125M",
         eval_every=1,
@@ -57,6 +64,7 @@ PRESETS: dict[str, dict] = {
     ),
     # Jedna epoka — test na PL Grid (jak ręczne wywołania w src/main.py).
     "test125M_1ep": dict(
+        **_CKPT_PRUNE,
         epochs=1,
         run_tag="125M",
         eval_every=5,
@@ -70,6 +78,7 @@ PRESETS: dict[str, dict] = {
         batch_size=32,
     ),
     "grid110M_gpt2": dict(
+        **_CKPT_PRUNE,
         epochs=10,
         run_tag="110M",
         eval_every=1,
@@ -85,6 +94,7 @@ PRESETS: dict[str, dict] = {
         batch_size=16,
     ),
     "grid110M_llama": dict(
+        **_CKPT_PRUNE,
         epochs=10,
         run_tag="110M",
         eval_every=1,
@@ -100,6 +110,7 @@ PRESETS: dict[str, dict] = {
         batch_size=16,
     ),
     "grid110M_nano": dict(
+        **_CKPT_PRUNE,
         epochs=10,
         run_tag="110M",
         eval_every=1,

@@ -15,4 +15,4 @@ Parametry wpływające na trening (checkpoint_every, eval_every, time_budget, ba
 ## Checkpointy epok (`checkpoints/epoch_*.pt`)
 
 - **W trakcie treningu**: częstość z `checkpoint_every` w presecie (DUAL3060: co epokę), bez kasowania w locie.
-- **Po `trainn`**: `compact_epoch_checkpoints` — zostaje ep. **1**, co **10**, oraz **ostatnie 5** epok (`LANGUAGE_RNN_CHECKPOINT_TAIL_KEEP`). `best_eval` / `final` bez zmian.
+- **Po `trainn`**: `compact_epoch_checkpoints` z `checkpoint_prune_post_training_mod` i `checkpoint_prune_post_training_tail` z presetu — ep. **1**, co **mod**, oraz **tail** ostatnich epok. `best_eval` / `final` bez zmian.

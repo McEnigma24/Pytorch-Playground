@@ -60,7 +60,13 @@ if __name__ == "__main__":
                 "rnnLSTM" | "rnnGRU" | "rnnRNN" | "rnnBaseLSTM" | "rnnAWDLSTM" | "rnnGoldenLSTM"
                 | "transformer_nanoGPT" | "transformer_miniLLaMA" | "transformer_GPT2small"
             ):
-                train.main(tensorboard_dir=run_dir, architecture=experiment)
+                from training_presets import CHECKPOINT_PRUNE_POST_TRAINING
+
+                train.main(
+                    tensorboard_dir=run_dir,
+                    architecture=experiment,
+                    **CHECKPOINT_PRUNE_POST_TRAINING,
+                )
 
             case "infer_rnnLSTM" | "infer_rnnGRU" | "infer_rnnRNN":
                 infer.main(architecture=experiment.removeprefix("infer_"))

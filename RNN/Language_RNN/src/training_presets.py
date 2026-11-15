@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+CHECKPOINT_PRUNE_POST_TRAINING = dict(
+    checkpoint_prune_post_training_mod=10,
+    checkpoint_prune_post_training_tail=5,
+)
+
 # Referencje do inferencji / compare (najlepsze z obecnego zestawu).
 LOCAL_BEST_LSTM = "rnnAWDLSTM"
 LOCAL_BEST_TRANSFORMER = "transformer_miniLLaMA"
@@ -11,6 +16,7 @@ _LOCAL6G_BASE = dict(
     run_tag="local6G",
     eval_every=1,
     checkpoint_every=1,
+    **CHECKPOINT_PRUNE_POST_TRAINING,
     seq_len=256,
     window_stride=256,
 )
@@ -41,6 +47,7 @@ _DUAL3060_BASE = dict(
     run_tag="dual3060",
     epochs=999,   # time per model will limit this
     checkpoint_every=1,
+    **CHECKPOINT_PRUNE_POST_TRAINING,
     eval_every=1,
     seq_len=512,
     window_stride=512,

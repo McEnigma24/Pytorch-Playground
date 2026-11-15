@@ -47,10 +47,6 @@ def load_checkpoint_payload(path: Path | str) -> dict:
     return torch.load(Path(path), map_location="cpu", weights_only=False)
 
 
-def _checkpoint_tail_keep() -> int:
-    return max(1, int(os.environ.get("LANGUAGE_RNN_CHECKPOINT_TAIL_KEEP", "5")))
-
-
 def _epoch_from_checkpoint_path(path: Path) -> int | None:
     if not path.name.startswith("epoch_") or path.suffix != ".pt":
         return None
@@ -71,23 +67,37 @@ def _max_epoch_in_checkpoints(checkpoints_dir: Path) -> int:
     return mx
 
 
-def _epochs_to_keep_after_training(final_epoch: int, *, tail_keep: int) -> set[int]:
+def _epochs_to_keep_after_training(
+    final_epoch: int, *, mod: int, tail_keep: int
+) -> set[int]:
     if final_epoch < 1:
         return set()
+    if mod < 1 or tail_keep < 1:
+        raise ValueError("checkpoint_prune_post_training_mod i _tail muszą być >= 1")
     keep: set[int] = {1}
-    keep.update(range(10, final_epoch + 1, 10))
+    if mod > 1:
+        keep.update(range(mod, final_epoch + 1, mod))
+    else:
+        keep.update(range(1, final_epoch + 1))
     tail_start = max(1, final_epoch - tail_keep + 1)
     keep.update(range(tail_start, final_epoch + 1))
     return keep
 
 
-def compact_epoch_checkpoints(save_dir: Path | str, final_epoch: int) -> None:
-    """Po treningu: ep. 1, co 10, oraz ostatnie tail_keep epok (reszta kasowana)."""
+def compact_epoch_checkpoints(
+    save_dir: Path | str,
+    final_epoch: int,
+    *,
+    checkpoint_prune_post_training_mod: int,
+    checkpoint_prune_post_training_tail: int,
+) -> None:
+    """Po treningu: ep. 1, co mod, oraz ostatnie tail epok (reszta kasowana)."""
     ckpt_dir = Path(save_dir) / "checkpoints"
     if final_epoch < 1 or not ckpt_dir.is_dir():
         return
-    tail = _checkpoint_tail_keep()
-    keep_eps = _epochs_to_keep_after_training(final_epoch, tail_keep=tail)
+    mod = checkpoint_prune_post_training_mod
+    tail = checkpoint_prune_post_training_tail
+    keep_eps = _epochs_to_keep_after_training(final_epoch, mod=mod, tail_keep=tail)
     removed = 0
     kept = 0
     for path in sorted(ckpt_dir.glob("epoch_*.pt")):
@@ -102,7 +112,7 @@ def compact_epoch_checkpoints(save_dir: Path | str, final_epoch: int) -> None:
     if removed:
         log_print(
             f"Checkpointy po treningu: zostało {kept} plików "
-            f"(ep. 1, co 10 do {final_epoch}, tail {tail}) — usunięto {removed}"
+            f"(ep. 1, co {mod} do {final_epoch}, tail {tail}) — usunięto {removed}"
         )
 
 
@@ -1103,6 +1113,8 @@ def main(
     precision: str | None = None,
     learning_rate: float = 3e-4,
     lightning_devices: int = 2,
+    checkpoint_prune_post_training_mod: int,
+    checkpoint_prune_post_training_tail: int,
 ) -> None:
     if tensorboard_dir is None:
         log_root = os.environ.get("TENSORBOARD_LOGDIR", "/workspace/runs")
@@ -1192,7 +1204,12 @@ def main(
         )
         final_ep = _max_epoch_in_checkpoints(save_dir / "checkpoints")
         if final_ep > 0:
-            compact_epoch_checkpoints(save_dir, final_ep)
+            compact_epoch_checkpoints(
+                save_dir,
+                final_ep,
+                checkpoint_prune_post_training_mod=checkpoint_prune_post_training_mod,
+                checkpoint_prune_post_training_tail=checkpoint_prune_post_training_tail,
+            )
         eval_loss, eval_ppl = net.evall(
             net, batch_size=batch_size, writer=writer, epoch=epochs
         )
