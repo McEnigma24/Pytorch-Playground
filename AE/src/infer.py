@@ -21,7 +21,9 @@ def main(
     architecture: str = "vanilla_ae",
     checkpoint_path: str | Path | None = None,
     run_dir: str | Path | None = None,
-) -> None:
+    n_examples: int = 8,
+    shuffle: bool = True,
+) -> Path | None:
     device = resolve_device()
 
     if checkpoint_path is None:
@@ -36,5 +38,9 @@ def main(
 
     log_print(f"Inferencja {architecture}: {checkpoint_path}")
     _payload, net = load_checkpoint(checkpoint_path, device=device, save_dir=run_dir)
-    net.preview_batch(net, batch_size=16)
-    log_print("Dodaj zapis PNG w preview_batch / save_inference_artifacts w modelu.")
+    return net.show_recon_grid(
+        net,
+        n_examples=n_examples,
+        shuffle=shuffle,
+        save_dir=run_dir,
+    )

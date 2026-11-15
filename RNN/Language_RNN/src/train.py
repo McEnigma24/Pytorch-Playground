@@ -47,6 +47,31 @@ def load_checkpoint_payload(path: Path | str) -> dict:
     return torch.load(Path(path), map_location="cpu", weights_only=False)
 
 
+def _checkpoint_keep_last() -> int:
+    return max(0, int(os.environ.get("LANGUAGE_RNN_CHECKPOINT_KEEP", "5")))
+
+
+def _prune_epoch_checkpoints(checkpoints_dir: Path, *, keep: int) -> None:
+    if keep <= 0 or not checkpoints_dir.is_dir():
+        return
+    files = sorted(checkpoints_dir.glob("epoch_*.pt"), key=lambda p: p.name)
+    drop = files[:-keep] if len(files) > keep else []
+    for path in drop:
+        path.unlink(missing_ok=True)
+        log_print(f"Usunięto stary checkpoint: {path.name}")
+
+
+def best_eval_loss_from_save_dir(save_dir: Path | str | None, architecture: str) -> float | None:
+    if save_dir is None:
+        return None
+    path = Path(save_dir) / f"{architecture}_best_eval.pt"
+    if not path.is_file():
+        return None
+    payload = load_checkpoint_payload(path)
+    loss = float(payload.get("eval_loss", float("inf")))
+    return loss if math.isfinite(loss) else None
+
+
 def resolve_device(device: torch.device | str | None = None) -> torch.device:
     if device is not None:
         return torch.device(device)
@@ -412,6 +437,7 @@ class LanguageModelNet(nn.Module):
             self._checkpoint_payload(model, optimizer, epoch, eval_loss, eval_perplexity, best_eval_loss),
             path,
         )
+        _prune_epoch_checkpoints(path.parent, keep=_checkpoint_keep_last())
         log_print(f"Checkpoint → {path}")
         return path
 
@@ -488,6 +514,156 @@ class LanguageModelNet(nn.Module):
             case "rnnGRU" | "rnnRNN":
                 return self.rnn.init_hidden(batch_n)
 
+    def _should_use_lightning(self) -> bool:
+        raw = os.environ.get("LANGUAGE_RNN_LIGHTNING", "auto").strip().lower()
+        if raw in ("0", "false", "no"):
+            return False
+        if raw in ("1", "true", "yes"):
+            return True
+        return torch.cuda.is_available() and torch.cuda.device_count() >= 2
+
+    def _trainn_lightning(
+        self,
+        model: LanguageModelNet,
+        *,
+        epochs: int,
+        batch_size: int,
+        writer: SummaryWriter | None,
+        max_grad_norm: float,
+        resume_payload: dict | None,
+        checkpoint_every: int,
+        eval_every: int,
+        time_budget_min: float,
+        precision: str | None,
+        learning_rate: float,
+        lightning_devices: int,
+        tensorboard_dir: str | None,
+    ) -> tuple[torch.optim.Optimizer, float]:
+        from datetime import timedelta
+
+        import lightning.pytorch as pl
+        from lightning.pytorch.loggers import TensorBoardLogger
+
+        from lit_module import (
+            LitLanguageModel,
+            ResumeLitCallback,
+            RunLogCallback,
+            TimeBudgetCallback,
+            default_lightning_precision,
+        )
+
+        os.environ.setdefault("NCCL_P2P_DISABLE", "1")
+
+        start_epoch = 0
+        best_eval_loss = float("inf")
+        if resume_payload is not None:
+            start_epoch = int(resume_payload["epoch"])
+            best_eval_loss = float(
+                resume_payload.get("best_eval_loss", resume_payload.get("eval_loss", float("inf")))
+            )
+            log_print(
+                f"Wczytano checkpoint (po {start_epoch} epokach), "
+                f"val_ppl={resume_payload.get('eval_perplexity', float('nan')):.2f}, "
+                f"best_eval_loss={best_eval_loss:.4f}"
+            )
+
+        if start_epoch >= epochs:
+            log_print(
+                f"Checkpoint ma epokę {start_epoch} ≥ cel {epochs} — pomijam trening Lightning."
+            )
+            opt = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+            if resume_payload is not None:
+                model.load_state_dict(resume_payload["model_state_dict"])
+                opt.load_state_dict(resume_payload["optimizer_state_dict"])
+            return opt, best_eval_loss
+
+        model.cpu()
+        model.tokenizer = None
+        model.metrics_logger = None
+        prec = precision or default_lightning_precision(model.architecture)
+        budget_sec = float(time_budget_min) * 60.0
+        log_print(
+            f"Lightning fit: devices={lightning_devices}, precision={prec}, "
+            f"budżet={time_budget_min:.0f} min"
+        )
+
+        lit = LitLanguageModel(
+            model, learning_rate=learning_rate, max_grad_norm=max_grad_norm
+        )
+        pin_memory = torch.cuda.is_available()
+        train_loader = DataLoader(
+            self.train_ds,
+            batch_size=batch_size,
+            shuffle=True,
+            pin_memory=pin_memory,
+            num_workers=0,
+        )
+        val_loader = DataLoader(
+            self.val_ds,
+            batch_size=batch_size,
+            shuffle=False,
+            pin_memory=pin_memory,
+            num_workers=0,
+        )
+
+        pl_logger = (
+            TensorBoardLogger(save_dir=tensorboard_dir, name="")
+            if tensorboard_dir
+            else False
+        )
+
+        metrics_dir = (
+            str(self.metrics_logger.save_dir) if self.metrics_logger is not None else None
+        )
+        run_cb = RunLogCallback(
+            metrics_save_dir=metrics_dir,
+            checkpoint_every=checkpoint_every,
+            eval_every=eval_every,
+            max_epochs_cap=epochs,
+            resume_best_eval=best_eval_loss,
+        )
+        callbacks = [
+            TimeBudgetCallback(budget_sec),
+            run_cb,
+            ResumeLitCallback(resume_payload),
+        ]
+        trainer = pl.Trainer(
+            accelerator="gpu" if torch.cuda.is_available() else "cpu",
+            devices=lightning_devices if torch.cuda.is_available() else 1,
+            strategy=(
+                "ddp_spawn"
+                if lightning_devices > 1 and torch.cuda.is_available()
+                else "auto"
+            ),
+            precision=prec,
+            max_epochs=epochs,
+            max_time=timedelta(minutes=time_budget_min * 1.1),
+            check_val_every_n_epoch=max(1, eval_every),
+            enable_progress_bar=False,
+            logger=pl_logger,
+            num_sanity_val_steps=0,
+            gradient_clip_val=max_grad_norm,
+            callbacks=callbacks,
+        )
+        trainer.fit(
+            lit,
+            train_dataloaders=train_loader,
+            val_dataloaders=val_loader,
+        )
+        if model.tokenizer is None:
+            model.tokenizer_prep()
+        model.metrics_logger = self.metrics_logger
+        model.to(self.device)
+        opt = run_cb.last_optimizer
+        if opt is None:
+            opt = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+        best_eval_loss = run_cb.best_eval_loss
+        if not math.isfinite(best_eval_loss) or best_eval_loss == float("inf"):
+            from_disk = best_eval_loss_from_save_dir(model.save_dir, model.architecture)
+            if from_disk is not None:
+                best_eval_loss = from_disk
+        return opt, best_eval_loss
+
     def trainn(
         self,
         model: LanguageModelNet,
@@ -498,7 +674,30 @@ class LanguageModelNet(nn.Module):
         resume_payload: dict | None = None,
         checkpoint_every: int = 5,
         eval_every: int = 5,
+        *,
+        time_budget_min: float | None = None,
+        precision: str | None = None,
+        learning_rate: float = 3e-4,
+        lightning_devices: int = 2,
+        tensorboard_dir: str | None = None,
     ) -> tuple[torch.optim.Optimizer, float]:
+        if time_budget_min is not None and self._should_use_lightning():
+            return self._trainn_lightning(
+                model,
+                epochs=epochs,
+                batch_size=batch_size,
+                writer=writer,
+                max_grad_norm=max_grad_norm,
+                resume_payload=resume_payload,
+                checkpoint_every=checkpoint_every,
+                eval_every=eval_every,
+                time_budget_min=time_budget_min,
+                precision=precision,
+                learning_rate=learning_rate,
+                lightning_devices=lightning_devices,
+                tensorboard_dir=tensorboard_dir,
+            )
+
         model.to(self.device)
         optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
         start_epoch = 0
@@ -856,6 +1055,10 @@ def main(
     seq_len: int = 100,
     window_stride: int = 1,
     batch_size: int = 128,
+    time_budget_min: float | None = None,
+    precision: str | None = None,
+    learning_rate: float = 3e-4,
+    lightning_devices: int = 2,
 ) -> None:
     if tensorboard_dir is None:
         log_root = os.environ.get("TENSORBOARD_LOGDIR", "/workspace/runs")
@@ -924,6 +1127,11 @@ def main(
     start_epoch = int(resume_payload["epoch"]) if resume_payload else 0
     try:
         t_run0 = time.perf_counter()
+        env_budget = os.environ.get("LANGUAGE_RNN_TIME_BUDGET_MIN", "").strip()
+        budget_min = time_budget_min
+        if budget_min is None and env_budget:
+            budget_min = float(env_budget)
+
         optimizer, best_eval_loss = net.trainn(
             net,
             epochs=epochs,
@@ -932,6 +1140,11 @@ def main(
             resume_payload=resume_payload,
             checkpoint_every=ckpt_every,
             eval_every=sample_every,
+            time_budget_min=budget_min,
+            precision=precision,
+            learning_rate=learning_rate,
+            lightning_devices=lightning_devices,
+            tensorboard_dir=tensorboard_dir,
         )
         eval_loss, eval_ppl = net.evall(
             net, batch_size=batch_size, writer=writer, epoch=epochs

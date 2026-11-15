@@ -6,6 +6,7 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 def new_gelu(x: torch.Tensor) -> torch.Tensor:
@@ -36,14 +37,12 @@ class CausalSelfAttention(nn.Module):
             k = torch.cat([cache[0], k], dim=2)
             v = torch.cat([cache[1], v], dim=2)
         new_cache = (k, v)
-        att = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        q_len = q.size(2)
-        seq_k = k.size(2)
-        mask = torch.tril(torch.ones(seq_k, seq_k, device=x.device, dtype=torch.bool))
-        att = att.masked_fill(~mask[-q_len:, :], float("-inf"))
-        att = torch.softmax(att, dim=-1)
-        att = self.attn_drop(att)
-        y = (att @ v).transpose(1, 2).contiguous().view(b, t, c)
+        drop_p = self.attn_drop.p if self.training else 0.0
+        if cache is None:
+            y = F.scaled_dot_product_attention(q, k, v, dropout_p=drop_p, is_causal=True)
+        else:
+            y = F.scaled_dot_product_attention(q, k, v, dropout_p=drop_p, is_causal=False)
+        y = y.transpose(1, 2).contiguous().view(b, t, c)
         y = self.resid_drop(self.proj(y)) * self.residual_scale
         return y, new_cache
 

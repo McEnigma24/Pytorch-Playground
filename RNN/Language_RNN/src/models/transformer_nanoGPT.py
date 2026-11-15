@@ -35,14 +35,11 @@ class CausalSelfAttention(nn.Module):
             k = torch.cat([k_cache, k], dim=2)
             v = torch.cat([v_cache, v], dim=2)
         new_cache = (k, v)
-        seq_k = k.size(2)
-        att = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        mask = torch.tril(torch.ones(seq_k, seq_k, device=x.device, dtype=torch.bool))
-        q_len = q.size(2)
-        att = att.masked_fill(~mask[-q_len:, :], float("-inf"))
-        att = F.softmax(att, dim=-1)
-        att = self.attn_drop(att)
-        y = att @ v
+        drop_p = self.attn_drop.p if self.training else 0.0
+        if cache is None:
+            y = F.scaled_dot_product_attention(q, k, v, dropout_p=drop_p, is_causal=True)
+        else:
+            y = F.scaled_dot_product_attention(q, k, v, dropout_p=drop_p, is_causal=False)
         y = y.transpose(1, 2).contiguous().view(b, t, c)
         return self.resid_drop(self.proj(y)), new_cache
 

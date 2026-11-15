@@ -32,8 +32,11 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        norm = x.pow(2).mean(dim=-1, keepdim=True)
-        return x * torch.rsqrt(norm + self.eps) * self.weight
+        # Norm w fp32 — bf16-mixed + małe eps daje niestabilne logitsy na początku treningu.
+        xf = x.float()
+        norm = xf.pow(2).mean(dim=-1, keepdim=True)
+        y = xf * torch.rsqrt(norm + self.eps) * self.weight.float()
+        return y.type_as(x)
 
 
 class SwiGLU(nn.Module):
@@ -80,14 +83,12 @@ class CausalRoPEAttention(nn.Module):
             k = torch.cat([cache[0], k], dim=2)
             v = torch.cat([cache[1], v], dim=2)
         new_cache = (k, v)
-        att = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        q_len = q.size(2)
-        seq_k = k.size(2)
-        mask = torch.tril(torch.ones(seq_k, seq_k, device=x.device, dtype=torch.bool))
-        att = att.masked_fill(~mask[-q_len:, :], float("-inf"))
-        att = F.softmax(att, dim=-1)
-        att = self.attn_drop(att)
-        y = (att @ v).transpose(1, 2).contiguous().view(b, t, c)
+        drop_p = self.attn_drop.p if self.training else 0.0
+        if cache is None:
+            y = F.scaled_dot_product_attention(q, k, v, dropout_p=drop_p, is_causal=True)
+        else:
+            y = F.scaled_dot_product_attention(q, k, v, dropout_p=drop_p, is_causal=False)
+        y = y.transpose(1, 2).contiguous().view(b, t, c)
         return self.resid_drop(self.proj(y)), new_cache
 
 
@@ -158,6 +159,15 @@ class transformer_miniLLaMA(nn.Module):
         self.norm_f = RMSNorm(n_embd)
         self.lm_head = nn.Linear(n_embd, vocab_size, bias=False)
         self.lm_head.weight = self.tok_emb.weight
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module: nn.Module) -> None:
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(
         self,

@@ -3,3 +3,4 @@
 services:
   dev:
     gpus: all
+    ipc: host

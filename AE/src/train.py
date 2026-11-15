@@ -327,19 +327,71 @@ class AutoencoderNet(nn.Module):
             stem="final",
         )
 
-    def preview_batch(self, model: AutoencoderNet, batch_size: int = 8) -> None:
-        """Opcjonalny podgląd po ewaluacji — Ty możesz tu dodać zapis PNG."""
-        loader = self._data_loader(self.val_ds, batch_size, shuffle=True)
+    def show_recon_grid(
+        self,
+        model: AutoencoderNet,
+        *,
+        n_examples: int = 8,
+        shuffle: bool = True,
+        save_dir: Path | str | None = None,
+    ) -> Path | None:
+        """Kilka par input | output obok siebie → PNG w katalogu runu."""
+        import matplotlib.pyplot as plt
+
+        n_examples = max(1, int(n_examples))
+        loader = self._data_loader(self.val_ds, n_examples, shuffle=shuffle)
         x, _ = next(iter(loader))
         x = x.to(self.device)
+        model.eval()
+
         try:
             with torch.no_grad():
                 if self.architecture == "ddpm":
-                    _ = model.ae.sample(min(8, x.size(0)), self.device)
+                    recon = model.ae.sample(n_examples, self.device)
+                    left = recon
+                    right = recon
+                    left_title, right_title = "sample", "sample"
+                elif self.architecture == "denoising_ae":
+                    noisy = model.ae.corrupt(x)
+                    recon = model.ae(noisy)
+                    left = noisy
+                    right = recon
+                    left_title, right_title = "noisy", "recon"
                 else:
-                    _ = model(x)
+                    recon = model(x)
+                    left = x
+                    right = recon
+                    left_title, right_title = "input", "recon"
         except NotImplementedError as exc:
             log_print(f"Podgląd pominięty (brak implementacji): {exc}")
+            return None
+
+        left = left.detach().cpu()
+        right = right.detach().cpu()
+
+        n = min(n_examples, left.size(0), right.size(0))
+        fig, axes = plt.subplots(n, 2, figsize=(4.0, 1.6 * n), squeeze=False)
+        for i in range(n):
+            axes[i, 0].imshow(left[i, 0], cmap="gray", vmin=0, vmax=1)
+            axes[i, 0].set_title(left_title if i == 0 else "")
+            axes[i, 1].imshow(right[i, 0], cmap="gray", vmin=0, vmax=1)
+            axes[i, 1].set_title(right_title if i == 0 else "")
+            for ax in axes[i]:
+                ax.axis("off")
+        fig.suptitle(f"{self.architecture} — walidacja MNIST", fontsize=11)
+        fig.tight_layout()
+
+        root = Path(save_dir) if save_dir is not None else self._ensure_save_dir()
+        out_dir = root / "reconstructions"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / "input_vs_recon.png"
+        fig.savefig(out_path, dpi=120)
+        plt.close(fig)
+        log_print(f"Rekonstrukcje (side by side) → {out_path}")
+        return out_path
+
+    def preview_batch(self, model: AutoencoderNet, batch_size: int = 8) -> None:
+        self.show_recon_grid(model, n_examples=batch_size, save_dir=model.save_dir)
 
     def trainn(
         self,

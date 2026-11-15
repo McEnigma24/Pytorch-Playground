@@ -21,6 +21,11 @@ import torch.nn.functional as F
 from models._tie import maybe_tie_lm_head
 
 
+def _noop_flatten_parameters() -> None:
+    """Zamiast lambdy w __init__ — spawn DDP musi pickle'ować model."""
+    return None
+
+
 class WeightDropLSTM(nn.Module):
     """Opakowanie LSTM: wagi z listy `weights` trzymane jako *_raw; w train() przed
     forwardem nakładany F.dropout na macierz wag (DropConnect na połączeniach hh)."""
@@ -34,7 +39,7 @@ class WeightDropLSTM(nn.Module):
             raw = getattr(module, name_w)
             delattr(module, name_w)
             self.register_parameter(f"{name_w}_raw", nn.Parameter(raw.data))
-        self.module.flatten_parameters = lambda: None
+        self.module.flatten_parameters = _noop_flatten_parameters
 
     def _setweights(self) -> None:
         # Zwykły tensor (nie Parameter) przez LSTM.__setattr__, żeby odświeżyć _flat_weights (cuDNN).

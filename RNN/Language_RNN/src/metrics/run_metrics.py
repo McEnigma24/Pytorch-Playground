@@ -16,6 +16,8 @@ METRICS_COLUMNS = (
     "eval_perplexity",
     "train_seconds",
     "eval_seconds",
+    "step",
+    "tokens_seen",
 )
 
 METRICS_FILENAME = "metrics.csv"
@@ -62,22 +64,32 @@ class RunMetricsLogger:
 
     def log_epoch(
         self,
-        epoch: int,
+        epoch: float,
         train_loss: float,
         train_perplexity: float,
         eval_loss: float,
         eval_perplexity: float,
         train_seconds: float,
         eval_seconds: float,
+        *,
+        step: int | None = None,
+        tokens_seen: int | None = None,
     ) -> None:
+        def _maybe(v: float) -> str | float:
+            if v != v:
+                return ""
+            return v
+
         row = {
             "epoch": epoch,
             "train_loss": train_loss,
             "train_perplexity": train_perplexity,
-            "eval_loss": eval_loss,
-            "eval_perplexity": eval_perplexity,
+            "eval_loss": _maybe(eval_loss),
+            "eval_perplexity": _maybe(eval_perplexity),
             "train_seconds": train_seconds,
             "eval_seconds": eval_seconds,
+            "step": step if step is not None else "",
+            "tokens_seen": tokens_seen if tokens_seen is not None else "",
         }
         write_header = not self.metrics_path.is_file()
         with self.metrics_path.open("a", encoding="utf-8", newline="") as f:

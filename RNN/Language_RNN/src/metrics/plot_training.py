@@ -29,6 +29,10 @@ def _load_epoch_frame(save_dir: Path) -> pd.DataFrame:
     ):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+    if "eval_loss" in df.columns:
+        df["eval_loss"] = pd.to_numeric(df["eval_loss"], errors="coerce")
+    if "eval_perplexity" in df.columns:
+        df["eval_perplexity"] = pd.to_numeric(df["eval_perplexity"], errors="coerce")
     return df.sort_values("epoch")
 
 
@@ -80,10 +84,13 @@ def plot_training_run(save_dir: Path, *, dpi: int = 120) -> list[Path]:
     if not arch:
         arch = save_dir.name.split("-", 1)[0]
 
+    eval_df = df[df["eval_loss"].notna() & (df["eval_loss"] != "")]
+
     # Loss #
     fig, ax = plt.subplots(figsize=(9, 5))
     ax.plot(df["epoch"], df["train_loss"], marker="o", label="train_loss")
-    ax.plot(df["epoch"], df["eval_loss"], marker="s", label="eval_loss")
+    if not eval_df.empty:
+        ax.plot(eval_df["epoch"], eval_df["eval_loss"], marker="s", label="eval_loss")
     ax.set_xlabel("epoch")
     ax.set_ylabel("loss")
     ax.set_title(f"Loss — {arch}")
@@ -97,7 +104,8 @@ def plot_training_run(save_dir: Path, *, dpi: int = 120) -> list[Path]:
     # Perplexity #
     fig, ax = plt.subplots(figsize=(9, 5))
     ax.plot(df["epoch"], df["train_perplexity"], marker="o", label="train_perplexity")
-    ax.plot(df["epoch"], df["eval_perplexity"], marker="s", label="eval_perplexity")
+    if not eval_df.empty:
+        ax.plot(eval_df["epoch"], eval_df["eval_perplexity"], marker="s", label="eval_perplexity")
     ax.set_xlabel("epoch")
     ax.set_ylabel("perplexity")
     ax.set_title(f"Perplexity — {arch}")
@@ -117,7 +125,7 @@ def plot_training_run(save_dir: Path, *, dpi: int = 120) -> list[Path]:
     ax.bar([i - width / 2 for i in x], df["train_seconds"], width=width, label="train_seconds")
     ax.bar([i + width / 2 for i in x], df["eval_seconds"], width=width, label="eval_seconds")
     ax.set_xticks(x)
-    ax.set_xticklabels([str(int(e)) for e in epochs])
+    ax.set_xticklabels([f"{float(e):g}" for e in epochs])
     ax.set_xlabel("epoch")
     ax.set_ylabel("sekundy")
     ax.set_title(f"Czas epoki (train + eval) — {arch}")

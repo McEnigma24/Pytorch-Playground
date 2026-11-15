@@ -13,7 +13,7 @@ from log_print import log_print, reset_log_timer, tensorboard_run_dir
 # experiment = "simple_mlp"
 
 # experiment = "rnnRNN"
-experiment = "rnnLSTM"
+# experiment = "rnnLSTM"
 # experiment = "rnnGRU"
 
 # experiment = "rnnBaseLSTM"
@@ -69,40 +69,32 @@ if __name__ == "__main__":
 
     # Manual Stuff #
 
-    # --- big picture (PLGrid / A100): training_presets.GRID125M_RNN, GRID110M_LLAMA --- #
+    from training_presets import DUAL3060_ALL
 
-    from training_presets import (
-        LOCAL6G_AWD,
-        LOCAL6G_LLAMA,
-        LOCAL_BEST_LSTM,
-        LOCAL_BEST_TRANSFORMER,
-    )
 
-    # Pełny Speakleash (~280M znaków) zabija RAM w Dockerze/WSL — lokalnie obetnij korpus:
-    os.environ.setdefault("LANGUAGE_RNN_MAX_CORPUS_CHARS", "12_000_000")
+    # DATASET load #
     if os.environ.get("LANGUAGE_RNN_MAX_CORPUS_CHARS"):
         log_print(
             f"Limit korpusu: {int(os.environ['LANGUAGE_RNN_MAX_CORPUS_CHARS']):,} znaków "
-            f"(usuń env dla PLGrid / pełnego treningu)"
+            f"(usuń env dla pełnego Speakleash)"
         )
+    else:
+        log_print("Korpus: pełny Speakleash (bez LANGUAGE_RNN_MAX_CORPUS_CHARS)")
 
-    train.main(tensorboard_dir=run_dir, architecture=LOCAL_BEST_LSTM, **LOCAL6G_AWD)
-    train.main(tensorboard_dir=run_dir, architecture=LOCAL_BEST_TRANSFORMER, **LOCAL6G_LLAMA)
 
-    # train.main(tensorboard_dir=run_dir, architecture=LOCAL_BEST_LSTM, resume="latest", **LOCAL6G_AWD)
-    # train.main(
-    #     tensorboard_dir=run_dir,
-    #     architecture=LOCAL_BEST_LSTM,
-    #     resume="saved_models/rnnAWDLSTM/8205732579___local6G___2026-11-10_00-20",
-    #     **LOCAL6G_AWD,
-    # )
 
+    # TRAIN THEM ALL #
+    for architecture, preset in DUAL3060_ALL:
+        train.main(tensorboard_dir=run_dir, architecture=architecture, **preset)
+
+    # train.main(tensorboard_dir=run_dir, architecture="rnnAWDLSTM", resume="latest", **preset)
+
+
+
+    # COMPARE THEM ALL #
     length = 25
     infer.compare_models(
-        models=[
-            (LOCAL_BEST_LSTM, None),
-            (LOCAL_BEST_TRANSFORMER, None),
-        ],
+        models=[(arch, None) for arch, _ in DUAL3060_ALL],
         prompts=[
             ("AGH to ", length),
             ("Język polski do cudowne dzieło ludzkości ", length),
@@ -139,7 +131,7 @@ if __name__ == "__main__":
             ("Sensem życia jest ", length),
         ],
         temperature=0.85,
-        run_tag="local6G-awd-vs-llama-wide",
+        run_tag="dual3060-110M",
     )
 
 

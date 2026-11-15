@@ -30,9 +30,70 @@ class vanilla_ae(nn.Module):
         self.image_size = image_size
         self.dropout_p = dropout
 
-        # --- Twoja sieć ---
-        # self.encoder = ...
-        # self.decoder = ...
+        self.encoder = nn.Sequential(
+            # 28 * 28   784
+            nn.Linear(self.image_size * self.image_size, 24 * 24),
+            nn.ReLU(),
+            nn.Dropout(self.dropout_p),
+
+            nn.Linear(24 * 24, 20 * 20),
+            nn.ReLU(),
+            nn.Dropout(self.dropout_p),
+
+            nn.Linear(20 * 20, 16 * 16),
+            nn.ReLU(),
+            nn.Dropout(self.dropout_p),
+
+            nn.Linear(16 * 16, 12 * 12),
+            nn.ReLU(),
+            nn.Dropout(self.dropout_p),
+
+            nn.Linear(12 * 12, 8 * 8),
+            nn.ReLU(),
+            nn.Dropout(self.dropout_p),
+
+            nn.Linear(8 * 8, self.latent_dim),
+            nn.ReLU(),
+            nn.Dropout(self.dropout_p),
+        )
+
+        self.decoder = nn.Sequential(
+            nn.Linear(self.latent_dim, 8 * 8),
+            nn.ReLU(),
+            nn.Dropout(self.dropout_p),
+
+            nn.Linear(8 * 8, 12 * 12),
+            nn.ReLU(),
+            nn.Dropout(self.dropout_p),
+
+            nn.Linear(12 * 12, 16 * 16),
+            nn.ReLU(),
+            nn.Dropout(self.dropout_p),
+
+            nn.Linear(16 * 16, 20 * 20),
+            nn.ReLU(),
+            nn.Dropout(self.dropout_p),
+
+            nn.Linear(20 * 20, 24 * 24),
+            nn.ReLU(),
+            nn.Dropout(self.dropout_p),
+
+            # 28 * 28   784
+            nn.Linear(24 * 24, self.image_size * self.image_size),
+            nn.ReLU(),
+            nn.Dropout(self.dropout_p),
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError("vanilla_ae.forward — zaimplementuj rekonstrukcję")
+
+        b = x.size(0)
+        x = x.flatten(1)  # (B, 1, 28, 28) → (B, 784)
+
+        x = self.encoder(x)
+        x = self.decoder(x)
+
+        x = x.view(b, self.in_channels, self.image_size, self.image_size) # inflate
+
+        return x
+
+

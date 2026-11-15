@@ -20,7 +20,7 @@ experiment = "vanilla_ae"
 # experiment = "infer_vanilla_ae"
 
 
-default_run = True
+default_run = False
 
 
 
@@ -60,4 +60,5 @@ if __name__ == "__main__":
 
     # train.main(tensorboard_dir=run_dir, architecture="vanilla_ae", epochs=5, run_tag="quick", batch_size=128)
     # train.main(tensorboard_dir=run_dir, architecture="vanilla_ae", resume="latest", epochs=10)
-    # infer.main(architecture="vanilla_ae")
+
+    infer.main(architecture="vanilla_ae", n_examples=8)

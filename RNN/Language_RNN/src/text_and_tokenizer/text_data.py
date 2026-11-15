@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 from speakleash import Speakleash
 from torch.utils.data import Dataset
@@ -24,15 +25,18 @@ CORPUS_FILENAME = "corpus.txt"
 DEFAULT_VOCAB_SIZE = 32_000
 BYTE_VOCAB_RESERVE = 256
 DEFAULT_TRAIN_FRAC = 0.9
-ENCODED_CACHE_VERSION = 1
+ENCODED_CACHE_VERSION = 2
 ENCODED_META_FILENAME = "meta.json"
-ENCODED_TRAIN_FILENAME = "train_ids.pt"
-ENCODED_VAL_FILENAME = "val_ids.pt"
+ENCODED_TRAIN_FILENAME = "train_ids.bin"
+ENCODED_VAL_FILENAME = "val_ids.bin"
+ENCODED_DTYPE = np.uint16
 
 # Ten sam klucz w procesie → bez ponownego wczytywania z dysku (np. dwa train.main w main.py).
 _SESSION_CACHE_KEY: tuple[Any, ...] | None = None
-_SESSION_TRAIN_IDS: torch.Tensor | None = None
-_SESSION_VAL_IDS: torch.Tensor | None = None
+# (path, offset, length) — uint16 memmap na dysku
+_TokenBacking = tuple[Path, int, int]
+_SESSION_TRAIN_BACKING: _TokenBacking | None = None
+_SESSION_VAL_BACKING: _TokenBacking | None = None
 _SESSION_N_CHARS: int = 0
 
 
@@ -239,50 +243,117 @@ def _cache_stale_reason(expected: dict[str, Any], stored: dict[str, Any]) -> str
     return None
 
 
-def _save_encoded_cache(
-    store: Path,
+def _open_token_memmap(backing: _TokenBacking) -> np.memmap:
+    path, offset, length = backing
+    full = np.memmap(path, dtype=ENCODED_DTYPE, mode="r")
+    if offset == 0 and length == len(full):
+        return full
+    return full[offset : offset + length]
+
+
+def _write_ids_bin(path: Path, ids: np.ndarray | list[int]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    arr = np.asarray(ids, dtype=ENCODED_DTYPE)
+    tmp = path.with_suffix(".bin.tmp")
+    arr.tofile(tmp)
+    tmp.replace(path)
+
+
+def _stream_encode_corpus_to_bins(
+    corpus_path: Path,
+    tokenizer: PreTrainedTokenizerFast,
+    train_path: Path,
+    val_path: Path,
     *,
-    meta: dict[str, Any],
-    train_ids: torch.Tensor,
-    val_ids: torch.Tensor,
-) -> None:
+    train_frac: float,
+    max_chars: int | None,
+) -> tuple[int, int, int]:
+    """Strumieniowo koduje korpus → train_ids.bin + val_ids.bin (uint16)."""
+    chunk_chars = int(os.environ.get("LANGUAGE_RNN_ENCODE_CHUNK_CHARS", "2_000_000").replace("_", ""))
+    store = encoded_dir()
+    store.mkdir(parents=True, exist_ok=True)
+    all_tmp = store / "all_ids_encode.tmp.bin"
+
+    n_chars = 0
+    n_tokens = 0
+    if all_tmp.is_file():
+        all_tmp.unlink()
+    log_print(f"Koduję korpus strumieniowo → {all_tmp.name}…")
+    with corpus_path.open("r", encoding="utf-8") as corpus_f, all_tmp.open("ab") as out_f:
+        while True:
+            if max_chars is not None and n_chars >= max_chars:
+                break
+            raw = corpus_f.read(chunk_chars)
+            if not raw:
+                break
+            raw = raw.replace("\r\n", "\n").replace("\r", "\n")
+            if max_chars is not None:
+                raw = raw[: max(0, max_chars - n_chars)]
+            if not raw:
+                break
+            ids = tokenizer.encode(raw, add_special_tokens=False)
+            if ids:
+                np.asarray(ids, dtype=ENCODED_DTYPE).tofile(out_f)
+                n_tokens += len(ids)
+            n_chars += len(raw)
+            if n_tokens // 500_000 != (n_tokens - len(ids)) // 500_000:
+                log_print(f"  …{n_chars:,} znaków → {n_tokens:,} tokenów")
+
+    if n_tokens <= 0:
+        raise RuntimeError("Brak tokenów po kodowaniu korpusu")
+
+    split = int(n_tokens * train_frac)
+    split = max(1, min(split, n_tokens - 1))
+    log_print(f"Split tokenów: train={split:,}, val={n_tokens - split:,}")
+
+    all_mm = np.memmap(all_tmp, dtype=ENCODED_DTYPE, mode="r")
+    train_mm = np.memmap(train_path, dtype=ENCODED_DTYPE, mode="w+", shape=(split,))
+    train_mm[:] = all_mm[:split]
+    train_mm.flush()
+    val_n = n_tokens - split
+    val_mm = np.memmap(val_path, dtype=ENCODED_DTYPE, mode="w+", shape=(val_n,))
+    val_mm[:] = all_mm[split:]
+    val_mm.flush()
+    del train_mm, val_mm, all_mm
+    all_tmp.unlink(missing_ok=True)
+    log_print(f"Zapisano {train_path.name} + {val_path.name}")
+    return n_chars, split, val_n
+
+
+def _save_encoded_cache_meta(store: Path, meta: dict[str, Any]) -> None:
     store.mkdir(parents=True, exist_ok=True)
     meta_path = store / ENCODED_META_FILENAME
-    train_path = store / ENCODED_TRAIN_FILENAME
-    val_path = store / ENCODED_VAL_FILENAME
     tmp_meta = meta_path.with_suffix(".json.tmp")
-    tmp_train = train_path.with_suffix(".pt.tmp")
-    tmp_val = val_path.with_suffix(".pt.tmp")
     tmp_meta.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    torch.save(train_ids, tmp_train)
-    torch.save(val_ids, tmp_val)
     tmp_meta.replace(meta_path)
-    tmp_train.replace(train_path)
-    tmp_val.replace(val_path)
     log_print(f"Cache encoded zapisany → {store}")
 
 
-def _load_encoded_cache(store: Path) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor] | None:
+def _load_encoded_cache(
+    store: Path,
+) -> tuple[dict[str, Any], _TokenBacking, _TokenBacking] | None:
     meta_path = store / ENCODED_META_FILENAME
     train_path = store / ENCODED_TRAIN_FILENAME
     val_path = store / ENCODED_VAL_FILENAME
     if not (meta_path.is_file() and train_path.is_file() and val_path.is_file()):
         return None
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    train_ids = torch.load(train_path, map_location="cpu", weights_only=True)
-    val_ids = torch.load(val_path, map_location="cpu", weights_only=True)
-    if not isinstance(train_ids, torch.Tensor) or not isinstance(val_ids, torch.Tensor):
-        raise RuntimeError(f"Uszkodzony cache encoded w {store}")
-    return meta, train_ids, val_ids
+    if int(meta.get("version", -1)) != ENCODED_CACHE_VERSION:
+        return None
+    n_train = int(meta["n_train_tokens"])
+    n_val = int(meta["n_val_tokens"])
+    train_back: _TokenBacking = (train_path, 0, n_train)
+    val_back: _TokenBacking = (val_path, 0, n_val)
+    return meta, train_back, val_back
 
 
 def _get_train_val_encoded(
     corpus_path: Path,
     tokenizer: PreTrainedTokenizerFast,
     tokenizer_json: Path,
-) -> tuple[torch.Tensor, torch.Tensor, int]:
-    """Wspólny train/val split tokenów — cache na dysku + w sesji procesu."""
-    global _SESSION_CACHE_KEY, _SESSION_TRAIN_IDS, _SESSION_VAL_IDS, _SESSION_N_CHARS
+) -> tuple[_TokenBacking, _TokenBacking, int]:
+    """Wspólny train/val split tokenów — cache uint16 na dysku + w sesji procesu."""
+    global _SESSION_CACHE_KEY, _SESSION_TRAIN_BACKING, _SESSION_VAL_BACKING, _SESSION_N_CHARS
 
     vocab_size = tokenizer.vocab_size
     max_chars = _max_corpus_chars_config()
@@ -299,12 +370,18 @@ def _get_train_val_encoded(
         train_frac=train_frac,
     )
 
-    if _SESSION_CACHE_KEY == cache_key and _SESSION_TRAIN_IDS is not None and _SESSION_VAL_IDS is not None:
-        log_print("Cache encoded: używam tensorów z tej sesji procesu")
-        return _SESSION_TRAIN_IDS, _SESSION_VAL_IDS, _SESSION_N_CHARS
+    if (
+        _SESSION_CACHE_KEY == cache_key
+        and _SESSION_TRAIN_BACKING is not None
+        and _SESSION_VAL_BACKING is not None
+    ):
+        log_print("Cache encoded: używam backingów z tej sesji procesu")
+        return _SESSION_TRAIN_BACKING, _SESSION_VAL_BACKING, _SESSION_N_CHARS
 
     mode = _encoded_cache_mode()
     store = encoded_dir()
+    train_path = store / ENCODED_TRAIN_FILENAME
+    val_path = store / ENCODED_VAL_FILENAME
     placeholder_meta = _expected_meta(
         corpus_path=corpus_path,
         corpus_sha256=corpus_sha256,
@@ -322,27 +399,29 @@ def _get_train_val_encoded(
     if mode != "off" and mode != "force":
         loaded = _load_encoded_cache(store)
         if loaded is not None:
-            stored_meta, train_ids, val_ids = loaded
+            stored_meta, train_back, val_back = loaded
             reason = _cache_stale_reason(placeholder_meta, stored_meta)
             if reason is None and _meta_fingerprint(stored_meta) == cache_key:
                 log_print(
-                    f"Cache encoded: wczytano {len(train_ids):,} + {len(val_ids):,} tokenów z {store}"
+                    f"Cache encoded: wczytano {stored_meta['n_train_tokens']:,} + "
+                    f"{stored_meta['n_val_tokens']:,} tokenów z {store}"
                 )
                 _SESSION_CACHE_KEY = cache_key
-                _SESSION_TRAIN_IDS = train_ids
-                _SESSION_VAL_IDS = val_ids
+                _SESSION_TRAIN_BACKING = train_back
+                _SESSION_VAL_BACKING = val_back
                 _SESSION_N_CHARS = int(stored_meta.get("n_chars_encoded", 0))
-                return train_ids, val_ids, _SESSION_N_CHARS
+                return train_back, val_back, _SESSION_N_CHARS
             if reason:
                 log_print(f"Cache encoded: przebudowa ({reason})")
 
-    text = load_corpus_text(corpus_path)
-    n_chars = len(text)
-    log_print("Koduję tekst na id tokenów (może chwilę potrwać)…")
-    encoded = encode_text(text, tokenizer)
-    del text
-    train_ids, val_ids = split_encoded(encoded, train_frac=train_frac)
-    del encoded
+    n_chars, n_train, n_val = _stream_encode_corpus_to_bins(
+        corpus_path,
+        tokenizer,
+        train_path,
+        val_path,
+        train_frac=train_frac,
+        max_chars=max_chars,
+    )
 
     if mode != "off":
         meta = _expected_meta(
@@ -355,16 +434,18 @@ def _get_train_val_encoded(
             max_chars=max_chars,
             train_frac=train_frac,
             n_chars_encoded=n_chars,
-            n_train_tokens=len(train_ids),
-            n_val_tokens=len(val_ids),
+            n_train_tokens=n_train,
+            n_val_tokens=n_val,
         )
-        _save_encoded_cache(store, meta=meta, train_ids=train_ids, val_ids=val_ids)
+        _save_encoded_cache_meta(store, meta)
 
+    train_back = (train_path, 0, n_train)
+    val_back = (val_path, 0, n_val)
     _SESSION_CACHE_KEY = cache_key
-    _SESSION_TRAIN_IDS = train_ids
-    _SESSION_VAL_IDS = val_ids
+    _SESSION_TRAIN_BACKING = train_back
+    _SESSION_VAL_BACKING = val_back
     _SESSION_N_CHARS = n_chars
-    return train_ids, val_ids, n_chars
+    return train_back, val_back, n_chars
 
 
 def _apply_corpus_char_limit(text: str) -> str:
@@ -463,27 +544,63 @@ def encode_text(text: str, tokenizer: PreTrainedTokenizerFast) -> torch.Tensor:
 class TokenSeqDataset(Dataset):
     """Okno [i : i+seq_len] → predykcja następnego tokenu na każdej pozycji."""
 
-    def __init__(self, encoded: torch.Tensor, seq_len: int, stride: int = 1):
-        if encoded.ndim != 1:
-            raise ValueError("encoded musi być tensorem 1D")
+    def __init__(
+        self,
+        encoded: torch.Tensor | np.ndarray | _TokenBacking,
+        seq_len: int,
+        stride: int = 1,
+    ):
         if stride < 1:
             raise ValueError("stride musi być >= 1")
-        if len(encoded) <= seq_len:
-            raise ValueError("tekst za krótki względem seq_len")
-        self.encoded = encoded
         self.seq_len = seq_len
         self.stride = stride
+        self._backing: _TokenBacking | None = None
+        self._encoded: torch.Tensor | np.ndarray | None = None
+
+        if isinstance(encoded, tuple) and len(encoded) == 3:
+            self._backing = encoded
+            length = encoded[2]
+        elif isinstance(encoded, (torch.Tensor, np.ndarray)):
+            self._encoded = encoded
+            length = len(encoded)
+        else:
+            raise TypeError("encoded: Tensor, ndarray albo (path, offset, length)")
+
+        if length <= seq_len:
+            raise ValueError("tekst za krótki względem seq_len")
+        self._length = length
+
+    def _mmap(self) -> np.ndarray | torch.Tensor:
+        if self._encoded is not None:
+            return self._encoded
+        assert self._backing is not None
+        return _open_token_memmap(self._backing)
 
     def __len__(self) -> int:
-        span = len(self.encoded) - self.seq_len
+        span = self._length - self.seq_len
         return (span + self.stride - 1) // self.stride
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
         start = index * self.stride
-        chunk = self.encoded[start : start + self.seq_len + 1]
-        x = chunk[:-1]
-        y = chunk[1:]
+        arr = self._mmap()
+        chunk = arr[start : start + self.seq_len + 1]
+        if isinstance(chunk, torch.Tensor):
+            x = chunk[:-1].to(dtype=torch.long)
+            y = chunk[1:].to(dtype=torch.long)
+        else:
+            chunk_i64 = np.asarray(chunk, dtype=np.int64)
+            x = torch.from_numpy(chunk_i64[:-1].copy())
+            y = torch.from_numpy(chunk_i64[1:].copy())
         return x, y
+
+    def __getstate__(self) -> dict[str, Any]:
+        state = self.__dict__.copy()
+        state["_encoded"] = None
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        self._encoded = None
 
 
 def split_encoded(encoded: torch.Tensor, train_frac: float = 0.9) -> tuple[torch.Tensor, torch.Tensor]:
@@ -501,10 +618,10 @@ def prepare_language_data(
     tokenizer = load_tokenizer(corpus_path)
     vocab_size = tokenizer.vocab_size
     tokenizer_json = tokenizer_dir() / "tokenizer.json"
-    train_enc, val_enc, n_chars = _get_train_val_encoded(corpus_path, tokenizer, tokenizer_json)
-    train_ds = TokenSeqDataset(train_enc, seq_len, stride=window_stride)
-    val_ds = TokenSeqDataset(val_enc, seq_len, stride=window_stride)
-    n_tokens = len(train_enc) + len(val_enc)
+    train_back, val_back, n_chars = _get_train_val_encoded(corpus_path, tokenizer, tokenizer_json)
+    train_ds = TokenSeqDataset(train_back, seq_len, stride=window_stride)
+    val_ds = TokenSeqDataset(val_back, seq_len, stride=window_stride)
+    n_tokens = train_back[2] + val_back[2]
     log_print(
         f"Korpus: {SPEAKLEASH_DATASET}, {n_chars:,} znaków → {n_tokens:,} tokenów, "
         f"vocab={vocab_size}, stride={window_stride}, "
