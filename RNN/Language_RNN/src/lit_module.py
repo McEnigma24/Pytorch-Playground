@@ -191,10 +191,10 @@ class RunLogCallback(Callback):
     def __init__(
         self,
         *,
+        checkpoint_every: int,
+        eval_every: int,
+        max_epochs_cap: int,
         metrics_save_dir: str | None = None,
-        checkpoint_every: int = 10,
-        eval_every: int = 2,
-        max_epochs_cap: int = 999,
         resume_best_eval: float = float("inf"),
     ) -> None:
         super().__init__()

@@ -1,0 +1,13 @@
+---
+description: Ważne hparamy treningu — bez domyślnych wartości w kodzie; źródło prawdy to presety
+globs: src/**/*.py
+alwaysApply: false
+---
+
+# Jawne hyperparametry treningu
+
+Parametry wpływające na trening (checkpoint_every, eval_every, time_budget, batch, LR, precision, seq_len, epochs cap itd.) **nie mają domyślnych wartości** w callbackach, trainerze ani podobnych miejscach — muszą być podane przy tworzeniu obiektu.
+
+- **Źródło prawdy**: `src/training_presets.py` (np. `_DUAL3060_BASE`, `DUAL3060_ALL`) oraz jawne argumenty `train.main(...)`.
+- **Wyjątki**: parametry czysto techniczne bez wpływu na eksperyment (np. `resume_best_eval=float("inf")` gdy brak resume, opcjonalny `metrics_save_dir=None` gdy bez CSV).
+- **Nowy preset / ścieżka treningu**: dopisz pola do presetu; nie dodawaj „wygodnego” defaultu w `lit_module.py` ani w `Trainer`, żeby nie ucichło brakujące pole.
